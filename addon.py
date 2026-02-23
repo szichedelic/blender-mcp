@@ -290,6 +290,8 @@ class BlenderMCPServer:
             "delete_object": self.delete_object,
             "set_object_transform": self.set_object_transform,
             "set_parent": self.set_parent,
+            "join_objects": self.join_objects,
+            "separate_object": self.separate_object,
             "select_objects": self.select_objects,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
@@ -1611,6 +1613,48 @@ class BlenderMCPServer:
         if keep_transform:
             child.matrix_parent_inverse = parent.matrix_world.inverted()
         return {"child": child.name, "parent": parent.name, "keep_transform": keep_transform}
+
+    def join_objects(self, object_names):
+        if len(object_names) < 2:
+            raise ValueError("At least 2 objects are required to join")
+        objects = []
+        for name in object_names:
+            obj = bpy.data.objects.get(name)
+            if not obj:
+                raise ValueError(f"Object not found: {name}")
+            if obj.type != 'MESH':
+                raise ValueError(f"Object '{name}' is not a mesh (type: {obj.type})")
+            objects.append(obj)
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in objects:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = objects[0]
+        bpy.ops.object.join()
+        active = bpy.context.view_layer.objects.active
+        return {
+            "name": active.name,
+            "joined_count": len(objects),
+            "vertices": len(active.data.vertices),
+            "polygons": len(active.data.polygons),
+        }
+
+    def separate_object(self, object_name, mode="SELECTED"):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        if obj.type != 'MESH':
+            raise ValueError(f"Object '{object_name}' is not a mesh (type: {obj.type})")
+        if mode not in ('SELECTED', 'MATERIAL', 'LOOSE'):
+            raise ValueError(f"Invalid mode: {mode}. Must be SELECTED, MATERIAL, or LOOSE")
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.separate(type=mode)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        result_names = [o.name for o in bpy.context.selected_objects]
+        return {"objects": result_names, "count": len(result_names)}
 
     def select_objects(self, names=None, type=None, material=None, deselect_first=True, active=None):
         if deselect_first:

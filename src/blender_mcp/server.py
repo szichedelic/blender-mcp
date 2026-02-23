@@ -1244,6 +1244,39 @@ def set_parent(
 
 
 @mcp.tool()
+def join_objects(ctx: Context, object_names: list) -> str:
+    """
+    Join multiple mesh objects into one.
+
+    Parameters:
+    - object_names: List of mesh object names to join (first becomes the active/target object)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("join_objects", {"object_names": object_names})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error joining objects: {str(e)}"
+
+
+@mcp.tool()
+def separate_object(ctx: Context, object_name: str, mode: str = "SELECTED") -> str:
+    """
+    Separate a mesh object into multiple objects.
+
+    Parameters:
+    - object_name: Name of the mesh object to separate
+    - mode: Separation mode - SELECTED (by selected geometry), MATERIAL (by material), or LOOSE (by loose parts)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("separate_object", {"object_name": object_name, "mode": mode})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error separating object: {str(e)}"
+
+
+@mcp.tool()
 def select_objects(
     ctx: Context,
     names: list = None,
