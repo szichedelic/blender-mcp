@@ -50,15 +50,10 @@ Socket timeout: 180 seconds for commands, 30 seconds for client recv (heartbeat-
 
 The addon supports optional integrations (PolyHaven, Sketchfab, Hyper3D Rodin, Hunyuan3D). Each is toggled via Blender scene properties and conditionally registers its command handlers. The MCP server mirrors this with corresponding tools that check integration status before use.
 
-### Telemetry
-
-`telemetry.py` + `telemetry_decorator.py` implement a non-blocking background telemetry system using Supabase. The `@telemetry_tool()` decorator wraps MCP tools. Consent level (from addon settings) controls what data is collected.
-
 ### Key Environment Variables
 
 - `BLENDER_HOST` / `BLENDER_PORT` — Override socket connection target (defaults: `localhost`, `9876`)
 - `BLENDER_AUTH_TOKEN` — Optional authentication token for socket connections. When set, the MCP server sends an auth handshake on connect. The addon must have the matching token configured in its panel.
-- `DISABLE_TELEMETRY=true` — Completely disable telemetry
 
 ### Entry Points
 

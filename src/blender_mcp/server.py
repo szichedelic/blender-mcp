@@ -13,8 +13,6 @@ from pathlib import Path
 import base64
 from urllib.parse import urlparse
 
-from .telemetry import record_startup, get_telemetry
-from .telemetry_decorator import telemetry_tool
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -149,11 +147,6 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
         logger.info("BlenderMCP server starting up")
 
         try:
-            record_startup()
-        except Exception as e:
-            logger.debug(f"Failed to record startup telemetry: {e}")
-
-        try:
             blender = get_blender_connection()
             logger.info("Successfully connected to Blender on startup")
         except Exception as e:
@@ -204,7 +197,6 @@ def get_blender_connection():
     return _blender_connection
 
 
-@telemetry_tool("get_scene_info")
 @mcp.tool()
 def get_scene_info(ctx: Context, offset: int = 0, limit: int = 50) -> str:
     """Get detailed information about the current Blender scene.
@@ -221,7 +213,6 @@ def get_scene_info(ctx: Context, offset: int = 0, limit: int = 50) -> str:
         logger.error(f"Error getting scene info from Blender: {str(e)}")
         return f"Error getting scene info: {str(e)}"
 
-@telemetry_tool("get_object_info")
 @mcp.tool()
 def get_object_info(ctx: Context, object_name: str) -> str:
     """
@@ -238,7 +229,6 @@ def get_object_info(ctx: Context, object_name: str) -> str:
         logger.error(f"Error getting object info from Blender: {str(e)}")
         return f"Error getting object info: {str(e)}"
 
-@telemetry_tool("get_viewport_screenshot")
 @mcp.tool()
 def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
     """
@@ -279,7 +269,6 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
         raise Exception(f"Screenshot failed: {str(e)}")
 
 
-@telemetry_tool("execute_blender_code")
 @mcp.tool()
 def execute_blender_code(ctx: Context, code: str, timeout: int = 30) -> str:
     """
@@ -1155,7 +1144,6 @@ def install_addon(ctx: Context, addon_path: str = None) -> str:
         logger.error(f"Error triggering addon install: {e}")
         return f"Error triggering addon install: {e}"
 
-@telemetry_tool("get_polyhaven_categories")
 @mcp.tool()
 def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
     """
@@ -1186,7 +1174,6 @@ def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
         logger.error(f"Error getting Polyhaven categories: {str(e)}")
         return f"Error getting Polyhaven categories: {str(e)}"
 
-@telemetry_tool("search_polyhaven_assets")
 @mcp.tool()
 def search_polyhaven_assets(
     ctx: Context,
@@ -1245,7 +1232,6 @@ def search_polyhaven_assets(
         logger.error(f"Error searching Polyhaven assets: {str(e)}")
         return f"Error searching Polyhaven assets: {str(e)}"
 
-@telemetry_tool("download_polyhaven_asset")
 @mcp.tool()
 def download_polyhaven_asset(
     ctx: Context,
@@ -1296,7 +1282,6 @@ def download_polyhaven_asset(
         logger.error(f"Error downloading Polyhaven asset: {str(e)}")
         return f"Error downloading Polyhaven asset: {str(e)}"
 
-@telemetry_tool("set_texture")
 @mcp.tool()
 def set_texture(
     ctx: Context,
@@ -1353,7 +1338,6 @@ def set_texture(
         logger.error(f"Error applying texture: {str(e)}")
         return f"Error applying texture: {str(e)}"
 
-@telemetry_tool("get_polyhaven_status")
 @mcp.tool()
 def get_polyhaven_status(ctx: Context) -> str:
     """
@@ -1372,7 +1356,6 @@ def get_polyhaven_status(ctx: Context) -> str:
         logger.error(f"Error checking PolyHaven status: {str(e)}")
         return f"Error checking PolyHaven status: {str(e)}"
 
-@telemetry_tool("get_hyper3d_status")
 @mcp.tool()
 def get_hyper3d_status(ctx: Context) -> str:
     """
@@ -1393,7 +1376,6 @@ def get_hyper3d_status(ctx: Context) -> str:
         logger.error(f"Error checking Hyper3D status: {str(e)}")
         return f"Error checking Hyper3D status: {str(e)}"
 
-@telemetry_tool("get_sketchfab_status")
 @mcp.tool()
 def get_sketchfab_status(ctx: Context) -> str:
     """
@@ -1412,7 +1394,6 @@ def get_sketchfab_status(ctx: Context) -> str:
         logger.error(f"Error checking Sketchfab status: {str(e)}")
         return f"Error checking Sketchfab status: {str(e)}"
 
-@telemetry_tool("search_sketchfab_models")
 @mcp.tool()
 def search_sketchfab_models(
     ctx: Context,
@@ -1487,7 +1468,6 @@ def search_sketchfab_models(
         logger.error(traceback.format_exc())
         return f"Error searching Sketchfab models: {str(e)}"
 
-@telemetry_tool("download_sketchfab_model")
 @mcp.tool()
 def get_sketchfab_model_preview(
     ctx: Context,
@@ -1607,7 +1587,6 @@ def _process_bbox(original_bbox: list[float] | list[int] | None) -> list[int] | 
         raise ValueError("Incorrect number range: bbox must be bigger than zero!")
     return [int(float(i) / max(original_bbox) * 100) for i in original_bbox] if original_bbox else None
 
-@telemetry_tool("generate_hyper3d_model_via_text")
 @mcp.tool()
 def generate_hyper3d_model_via_text(
     ctx: Context,
@@ -1644,7 +1623,6 @@ def generate_hyper3d_model_via_text(
         logger.error(f"Error generating Hyper3D task: {str(e)}")
         return f"Error generating Hyper3D task: {str(e)}"
 
-@telemetry_tool("generate_hyper3d_model_via_images")
 @mcp.tool()
 def generate_hyper3d_model_via_images(
     ctx: Context,
@@ -1701,7 +1679,6 @@ def generate_hyper3d_model_via_images(
         logger.error(f"Error generating Hyper3D task: {str(e)}")
         return f"Error generating Hyper3D task: {str(e)}"
 
-@telemetry_tool("poll_rodin_job_status")
 @mcp.tool()
 def poll_rodin_job_status(
     ctx: Context,
@@ -1745,7 +1722,6 @@ def poll_rodin_job_status(
         logger.error(f"Error generating Hyper3D task: {str(e)}")
         return f"Error generating Hyper3D task: {str(e)}"
 
-@telemetry_tool("import_generated_asset")
 @mcp.tool()
 def import_generated_asset(
     ctx: Context,
