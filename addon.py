@@ -166,7 +166,6 @@ class BlenderMCPServer:
         logger.info("Client handler started")
         client.settimeout(None)  # No timeout
         self._client_socket = client
-        buffer = b''
 
         # Socket authentication check
         if self._auth_token:
@@ -185,40 +184,29 @@ class BlenderMCPServer:
         try:
             while self.running:
                 try:
-                    data = client.recv(8192)
-                    if not data:
-                        logger.info("Client disconnected")
-                        break
+                    command = recv_message(client, timeout=30.0)
+                    if command is None:
+                        continue
 
-                    buffer += data
-                    try:
-                        command = json.loads(buffer.decode('utf-8'))
-                        buffer = b''
-
-                        def execute_wrapper():
+                    def execute_wrapper(cmd=command, cli=client):
+                        try:
+                            response = self.execute_command(cmd)
                             try:
-                                response = self.execute_command(command)
-                                response_json = json.dumps(response)
-                                try:
-                                    client.sendall(response_json.encode('utf-8'))
-                                except:
-                                    logger.warning("Failed to send response - client disconnected")
-                            except Exception as e:
-                                logger.error(f"Error executing command: {str(e)}")
-                                traceback.print_exc()
-                                try:
-                                    error_response = {
-                                        "status": "error",
-                                        "message": str(e)
-                                    }
-                                    client.sendall(json.dumps(error_response).encode('utf-8'))
-                                except:
-                                    pass
-                            return None
+                                send_message(cli, response)
+                            except:
+                                logger.warning("Failed to send response - client disconnected")
+                        except Exception as e:
+                            logger.error(f"Error executing command: {str(e)}")
+                            traceback.print_exc()
+                            try:
+                                send_message(cli, {"status": "error", "message": str(e)})
+                            except:
+                                pass
+                        return None
 
-                        bpy.app.timers.register(execute_wrapper, first_interval=0.0)
-                    except json.JSONDecodeError:
-                        pass
+                    bpy.app.timers.register(execute_wrapper, first_interval=0.0)
+                except socket.timeout:
+                    continue
                 except Exception as e:
                     logger.error(f"Error receiving data: {str(e)}")
                     break
