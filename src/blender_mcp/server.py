@@ -206,13 +206,16 @@ def get_blender_connection():
 
 @telemetry_tool("get_scene_info")
 @mcp.tool()
-def get_scene_info(ctx: Context) -> str:
-    """Get detailed information about the current Blender scene"""
+def get_scene_info(ctx: Context, offset: int = 0, limit: int = 50) -> str:
+    """Get detailed information about the current Blender scene.
+
+    Parameters:
+    - offset: Starting index for object list pagination (default: 0)
+    - limit: Maximum number of objects to return (default: 50)
+    """
     try:
         blender = get_blender_connection()
-        result = blender.send_command("get_scene_info")
-
-        # Just return the JSON representation of what Blender sent us
+        result = blender.send_command("get_scene_info", {"offset": offset, "limit": limit})
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting scene info from Blender: {str(e)}")
@@ -278,18 +281,25 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
 
 @telemetry_tool("execute_blender_code")
 @mcp.tool()
-def execute_blender_code(ctx: Context, code: str) -> str:
+def execute_blender_code(ctx: Context, code: str, timeout: int = 30) -> str:
     """
     Execute arbitrary Python code in Blender. Make sure to do it step-by-step by breaking it into smaller chunks.
 
     Parameters:
     - code: The Python code to execute
+    - timeout: Maximum execution time in seconds (default: 30, max: 120)
     """
     try:
-        # Get the global connection
         blender = get_blender_connection()
-        result = blender.send_command("execute_code", {"code": code})
-        return f"Code executed successfully: {result.get('result', '')}"
+        result = blender.send_command("execute_code", {"code": code, "timeout": timeout})
+        output = "Code executed successfully."
+        if result.get('result'):
+            output += f"\nOutput: {result['result']}"
+        if result.get('stderr'):
+            output += f"\nStderr: {result['stderr']}"
+        if result.get('warning'):
+            output += f"\nWarning: {result['warning']}"
+        return output
     except Exception as e:
         logger.error(f"Error executing code: {str(e)}")
         return f"Error executing code: {str(e)}"
@@ -372,46 +382,55 @@ def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
 def search_polyhaven_assets(
     ctx: Context,
     asset_type: str = "all",
-    categories: str = None
+    categories: str = None,
+    offset: int = 0,
+    limit: int = 20
 ) -> str:
     """
     Search for assets on Polyhaven with optional filtering.
-    
+
     Parameters:
     - asset_type: Type of assets to search for (hdris, textures, models, all)
     - categories: Optional comma-separated list of categories to filter by
-    
+    - offset: Starting index for pagination (default: 0)
+    - limit: Maximum number of results to return (default: 20)
+
     Returns a list of matching assets with basic information.
     """
     try:
         blender = get_blender_connection()
         result = blender.send_command("search_polyhaven_assets", {
             "asset_type": asset_type,
-            "categories": categories
+            "categories": categories,
+            "offset": offset,
+            "limit": limit
         })
-        
+
         if "error" in result:
             return f"Error: {result['error']}"
-        
-        # Format the assets in a more readable way
+
         assets = result["assets"]
         total_count = result["total_count"]
         returned_count = result["returned_count"]
-        
+        result_offset = result.get("offset", 0)
+        has_more = result.get("has_more", False)
+
         formatted_output = f"Found {total_count} assets"
         if categories:
             formatted_output += f" in categories: {categories}"
-        formatted_output += f"\nShowing {returned_count} assets:\n\n"
-        
-        # Sort assets by download count (popularity)
+        formatted_output += f"\nShowing {returned_count} assets (offset: {result_offset})"
+        if has_more:
+            formatted_output += f" — more available with offset={result_offset + returned_count}"
+        formatted_output += ":\n\n"
+
         sorted_assets = sorted(assets.items(), key=lambda x: x[1].get("download_count", 0), reverse=True)
-        
+
         for asset_id, asset_data in sorted_assets:
             formatted_output += f"- {asset_data.get('name', asset_id)} (ID: {asset_id})\n"
             formatted_output += f"  Type: {['HDRI', 'Texture', 'Model'][asset_data.get('type', 0)]}\n"
             formatted_output += f"  Categories: {', '.join(asset_data.get('categories', []))}\n"
             formatted_output += f"  Downloads: {asset_data.get('download_count', 'Unknown')}\n\n"
-        
+
         return formatted_output
     except Exception as e:
         logger.error(f"Error searching Polyhaven assets: {str(e)}")
@@ -648,6 +667,9 @@ def search_sketchfab_models(
             is_downloadable = "Yes" if model.get("isDownloadable") else "No"
             formatted_output += f"  Face count: {face_count}\n"
             formatted_output += f"  Downloadable: {is_downloadable}\n\n"
+
+        if result.get("next"):
+            formatted_output += "More results available. Use a higher count to see more.\n"
 
         return formatted_output
     except Exception as e:
