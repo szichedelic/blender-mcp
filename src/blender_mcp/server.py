@@ -467,6 +467,386 @@ def get_constraints(ctx: Context, object_name: str) -> str:
 
 
 @mcp.tool()
+def create_light(
+    ctx: Context,
+    light_type: str = "POINT",
+    name: str = "Light",
+    location: list = None,
+    rotation: list = None,
+    energy: float = 1000.0,
+    color: list = None,
+    size: float = 0.25,
+    spot_angle: float = 45.0,
+    shadow: bool = True
+) -> str:
+    """
+    Create a new light in the scene.
+
+    Parameters:
+    - light_type: Type of light (POINT, SUN, SPOT, AREA)
+    - name: Name for the light object
+    - location: [x, y, z] position (default: [0, 0, 3])
+    - rotation: [x, y, z] rotation in radians
+    - energy: Light power/energy
+    - color: [r, g, b] color values 0-1
+    - size: Shadow soft size
+    - spot_angle: Spot cone angle in degrees (SPOT only)
+    - shadow: Enable shadows
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"light_type": light_type, "name": name, "energy": energy, "size": size, "spot_angle": spot_angle, "shadow": shadow}
+        if location: params["location"] = location
+        if rotation: params["rotation"] = rotation
+        if color: params["color"] = color
+        result = blender.send_command("create_light", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating light: {str(e)}"
+
+
+@mcp.tool()
+def set_light_property(
+    ctx: Context,
+    light_name: str,
+    energy: float = None,
+    color: list = None,
+    size: float = None,
+    shadow: bool = None,
+    location: list = None,
+    rotation: list = None
+) -> str:
+    """
+    Set properties on an existing light.
+
+    Parameters:
+    - light_name: Name of the light object
+    - energy: Light power/energy
+    - color: [r, g, b] color values
+    - size: Shadow soft size
+    - shadow: Enable/disable shadows
+    - location: [x, y, z] position
+    - rotation: [x, y, z] rotation in radians
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"light_name": light_name}
+        if energy is not None: params["energy"] = energy
+        if color is not None: params["color"] = color
+        if size is not None: params["size"] = size
+        if shadow is not None: params["shadow"] = shadow
+        if location is not None: params["location"] = location
+        if rotation is not None: params["rotation"] = rotation
+        result = blender.send_command("set_light_property", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting light property: {str(e)}"
+
+
+@mcp.tool()
+def create_camera(
+    ctx: Context,
+    name: str = "Camera",
+    location: list = None,
+    rotation: list = None,
+    focal_length: float = 50.0,
+    sensor_width: float = 36.0,
+    set_active: bool = True
+) -> str:
+    """
+    Create a new camera in the scene.
+
+    Parameters:
+    - name: Name for the camera
+    - location: [x, y, z] position
+    - rotation: [x, y, z] rotation in radians
+    - focal_length: Lens focal length in mm
+    - sensor_width: Sensor width in mm
+    - set_active: Set as the active scene camera
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": name, "focal_length": focal_length, "sensor_width": sensor_width, "set_active": set_active}
+        if location: params["location"] = location
+        if rotation: params["rotation"] = rotation
+        result = blender.send_command("create_camera", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating camera: {str(e)}"
+
+
+@mcp.tool()
+def set_camera_property(
+    ctx: Context,
+    camera_name: str,
+    focal_length: float = None,
+    clip_start: float = None,
+    clip_end: float = None,
+    dof_enabled: bool = None,
+    dof_focus_distance: float = None,
+    dof_aperture_fstop: float = None,
+    location: list = None,
+    rotation: list = None
+) -> str:
+    """
+    Set properties on an existing camera.
+
+    Parameters:
+    - camera_name: Name of the camera object
+    - focal_length: Lens focal length in mm
+    - clip_start: Near clipping distance
+    - clip_end: Far clipping distance
+    - dof_enabled: Enable/disable depth of field
+    - dof_focus_distance: DOF focus distance
+    - dof_aperture_fstop: DOF aperture f-stop
+    - location: [x, y, z] position
+    - rotation: [x, y, z] rotation in radians
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"camera_name": camera_name}
+        for key, val in [("focal_length", focal_length), ("clip_start", clip_start), ("clip_end", clip_end),
+                         ("dof_enabled", dof_enabled), ("dof_focus_distance", dof_focus_distance),
+                         ("dof_aperture_fstop", dof_aperture_fstop), ("location", location), ("rotation", rotation)]:
+            if val is not None:
+                params[key] = val
+        result = blender.send_command("set_camera_property", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting camera property: {str(e)}"
+
+
+@mcp.tool()
+def set_active_camera(ctx: Context, camera_name: str) -> str:
+    """
+    Set the active camera for the scene.
+
+    Parameters:
+    - camera_name: Name of the camera object to make active
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_active_camera", {"camera_name": camera_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting active camera: {str(e)}"
+
+
+@mcp.tool()
+def create_collection(ctx: Context, name: str, parent_name: str = None) -> str:
+    """
+    Create a new collection in the scene.
+
+    Parameters:
+    - name: Name for the new collection
+    - parent_name: Optional parent collection name (uses scene collection if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": name}
+        if parent_name: params["parent_name"] = parent_name
+        result = blender.send_command("create_collection", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool()
+def delete_collection(ctx: Context, collection_name: str, delete_objects: bool = False) -> str:
+    """
+    Delete a collection.
+
+    Parameters:
+    - collection_name: Name of the collection to delete
+    - delete_objects: If True, also delete all objects in the collection
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("delete_collection", {"collection_name": collection_name, "delete_objects": delete_objects})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error deleting collection: {str(e)}"
+
+
+@mcp.tool()
+def move_to_collection(ctx: Context, object_name: str, collection_name: str, unlink_from_current: bool = True) -> str:
+    """
+    Move an object to a different collection.
+
+    Parameters:
+    - object_name: Name of the object to move
+    - collection_name: Target collection name
+    - unlink_from_current: Remove from current collections first (default: True)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("move_to_collection", {
+            "object_name": object_name, "collection_name": collection_name, "unlink_from_current": unlink_from_current
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error moving to collection: {str(e)}"
+
+
+@mcp.tool()
+def set_collection_visibility(ctx: Context, collection_name: str, hide_viewport: bool = None, hide_render: bool = None) -> str:
+    """
+    Set visibility for a collection.
+
+    Parameters:
+    - collection_name: Name of the collection
+    - hide_viewport: Hide in viewport
+    - hide_render: Hide in render
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"collection_name": collection_name}
+        if hide_viewport is not None: params["hide_viewport"] = hide_viewport
+        if hide_render is not None: params["hide_render"] = hide_render
+        result = blender.send_command("set_collection_visibility", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting collection visibility: {str(e)}"
+
+
+@mcp.tool()
+def create_material(
+    ctx: Context,
+    name: str,
+    object_name: str = None,
+    base_color: list = None,
+    roughness: float = 0.5,
+    metallic: float = 0.0
+) -> str:
+    """
+    Create a new PBR material with Principled BSDF.
+
+    Parameters:
+    - name: Material name
+    - object_name: Optional object to assign the material to
+    - base_color: [r, g, b] or [r, g, b, a] base color (0-1)
+    - roughness: Surface roughness (0-1)
+    - metallic: Metallic value (0-1)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": name, "roughness": roughness, "metallic": metallic}
+        if object_name: params["object_name"] = object_name
+        if base_color: params["base_color"] = base_color
+        result = blender.send_command("create_material", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating material: {str(e)}"
+
+
+@mcp.tool()
+def assign_material(ctx: Context, object_name: str, material_name: str, slot_index: int = None) -> str:
+    """
+    Assign an existing material to an object.
+
+    Parameters:
+    - object_name: Name of the target object
+    - material_name: Name of the material to assign
+    - slot_index: Optional material slot index to replace (appends if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "material_name": material_name}
+        if slot_index is not None: params["slot_index"] = slot_index
+        result = blender.send_command("assign_material", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error assigning material: {str(e)}"
+
+
+@mcp.tool()
+def set_material_property(ctx: Context, material_name: str, property_name: str, value) -> str:
+    """
+    Set a Principled BSDF property on a material.
+
+    Parameters:
+    - material_name: Name of the material
+    - property_name: Name of the BSDF input (e.g. "Base Color", "Roughness", "Metallic", "IOR")
+    - value: The value to set (float for scalar, [r,g,b,a] for colors)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_material_property", {
+            "material_name": material_name, "property_name": property_name, "value": value
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting material property: {str(e)}"
+
+
+@mcp.tool()
+def set_frame_range(ctx: Context, start_frame: int = None, end_frame: int = None, current_frame: int = None, fps: int = None) -> str:
+    """
+    Set the animation frame range, current frame, and FPS.
+
+    Parameters:
+    - start_frame: Animation start frame
+    - end_frame: Animation end frame
+    - current_frame: Jump to this frame
+    - fps: Frames per second
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        if start_frame is not None: params["start_frame"] = start_frame
+        if end_frame is not None: params["end_frame"] = end_frame
+        if current_frame is not None: params["current_frame"] = current_frame
+        if fps is not None: params["fps"] = fps
+        result = blender.send_command("set_frame_range", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting frame range: {str(e)}"
+
+
+@mcp.tool()
+def insert_keyframe(ctx: Context, object_name: str, property_path: str, frame: int, value=None, index: int = -1) -> str:
+    """
+    Insert a keyframe on an object property.
+
+    Parameters:
+    - object_name: Name of the object
+    - property_path: Property to keyframe (e.g. "location", "rotation_euler", "scale")
+    - frame: Frame number to insert the keyframe at
+    - value: Optional value to set before keying (float or [x,y,z] list)
+    - index: Array index (-1 for all)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "property_path": property_path, "frame": frame, "index": index}
+        if value is not None: params["value"] = value
+        result = blender.send_command("insert_keyframe", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error inserting keyframe: {str(e)}"
+
+
+@mcp.tool()
+def delete_keyframe(ctx: Context, object_name: str, property_path: str, frame: int, index: int = -1) -> str:
+    """
+    Delete a keyframe from an object property.
+
+    Parameters:
+    - object_name: Name of the object
+    - property_path: Property path (e.g. "location", "rotation_euler")
+    - frame: Frame number of the keyframe to delete
+    - index: Array index (-1 for all)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("delete_keyframe", {
+            "object_name": object_name, "property_path": property_path, "frame": frame, "index": index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error deleting keyframe: {str(e)}"
+
+
+@mcp.tool()
 def reload_addon(ctx: Context) -> str:
     """
     Reload the Blender addon from disk. Use after modifying addon.py.

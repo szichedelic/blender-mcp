@@ -269,6 +269,21 @@ class BlenderMCPServer:
             "get_modifiers": self.get_modifiers,
             "get_material_info": self.get_material_info,
             "get_constraints": self.get_constraints,
+            "create_light": self.create_light,
+            "set_light_property": self.set_light_property,
+            "create_camera": self.create_camera,
+            "set_camera_property": self.set_camera_property,
+            "set_active_camera": self.set_active_camera,
+            "create_collection": self.create_collection,
+            "delete_collection": self.delete_collection,
+            "move_to_collection": self.move_to_collection,
+            "set_collection_visibility": self.set_collection_visibility,
+            "create_material": self.create_material,
+            "assign_material": self.assign_material,
+            "set_material_property": self.set_material_property,
+            "set_frame_range": self.set_frame_range,
+            "insert_keyframe": self.insert_keyframe,
+            "delete_keyframe": self.delete_keyframe,
             "get_viewport_screenshot": self.get_viewport_screenshot,
             "execute_code": self.execute_code,
             "get_telemetry_consent": self.get_telemetry_consent,
@@ -846,6 +861,267 @@ class BlenderMCPServer:
             con_info["params"] = self._serialize_properties(con)
             constraints.append(con_info)
         return {"name": name, "constraints": constraints}
+
+    # --- Phase 3: Creation / Mutation Handlers ---
+
+    def create_light(self, light_type="POINT", name="Light", location=None, rotation=None, energy=1000.0, color=None, size=0.25, spot_angle=45.0, shadow=True):
+        if location is None:
+            location = [0, 0, 3]
+        if color is None:
+            color = [1.0, 1.0, 1.0]
+        if rotation is None:
+            rotation = [0, 0, 0]
+
+        light_data = bpy.data.lights.new(name=name, type=light_type)
+        light_data.energy = energy
+        light_data.color = color[:3]
+        light_data.use_shadow = shadow
+
+        if light_type == 'SPOT':
+            import math
+            light_data.spot_size = math.radians(spot_angle)
+        if light_type in ('POINT', 'SPOT', 'AREA'):
+            light_data.shadow_soft_size = size
+
+        light_obj = bpy.data.objects.new(name=name, object_data=light_data)
+        bpy.context.collection.objects.link(light_obj)
+        light_obj.location = location
+        light_obj.rotation_euler = rotation
+
+        return {
+            "name": light_obj.name,
+            "type": light_data.type,
+            "energy": light_data.energy,
+            "location": list(light_obj.location),
+        }
+
+    def set_light_property(self, light_name, energy=None, color=None, size=None, shadow=None, location=None, rotation=None):
+        obj = bpy.data.objects.get(light_name)
+        if not obj or obj.type != 'LIGHT':
+            raise ValueError(f"Light not found: {light_name}")
+        light = obj.data
+        if energy is not None:
+            light.energy = energy
+        if color is not None:
+            light.color = color[:3]
+        if size is not None:
+            light.shadow_soft_size = size
+        if shadow is not None:
+            light.use_shadow = shadow
+        if location is not None:
+            obj.location = location
+        if rotation is not None:
+            obj.rotation_euler = rotation
+        return {"name": obj.name, "updated": True}
+
+    def create_camera(self, name="Camera", location=None, rotation=None, focal_length=50.0, sensor_width=36.0, set_active=True):
+        if location is None:
+            location = [0, -5, 2]
+        if rotation is None:
+            import math
+            rotation = [math.radians(75), 0, 0]
+
+        cam_data = bpy.data.cameras.new(name=name)
+        cam_data.lens = focal_length
+        cam_data.sensor_width = sensor_width
+
+        cam_obj = bpy.data.objects.new(name=name, object_data=cam_data)
+        bpy.context.collection.objects.link(cam_obj)
+        cam_obj.location = location
+        cam_obj.rotation_euler = rotation
+
+        if set_active:
+            bpy.context.scene.camera = cam_obj
+
+        return {
+            "name": cam_obj.name,
+            "focal_length": cam_data.lens,
+            "location": list(cam_obj.location),
+            "is_active": bpy.context.scene.camera == cam_obj,
+        }
+
+    def set_camera_property(self, camera_name, focal_length=None, clip_start=None, clip_end=None, dof_enabled=None, dof_focus_distance=None, dof_aperture_fstop=None, location=None, rotation=None):
+        obj = bpy.data.objects.get(camera_name)
+        if not obj or obj.type != 'CAMERA':
+            raise ValueError(f"Camera not found: {camera_name}")
+        cam = obj.data
+        if focal_length is not None:
+            cam.lens = focal_length
+        if clip_start is not None:
+            cam.clip_start = clip_start
+        if clip_end is not None:
+            cam.clip_end = clip_end
+        if dof_enabled is not None:
+            cam.dof.use_dof = dof_enabled
+        if dof_focus_distance is not None:
+            cam.dof.focus_distance = dof_focus_distance
+        if dof_aperture_fstop is not None:
+            cam.dof.aperture_fstop = dof_aperture_fstop
+        if location is not None:
+            obj.location = location
+        if rotation is not None:
+            obj.rotation_euler = rotation
+        return {"name": obj.name, "updated": True}
+
+    def set_active_camera(self, camera_name):
+        obj = bpy.data.objects.get(camera_name)
+        if not obj or obj.type != 'CAMERA':
+            raise ValueError(f"Camera not found: {camera_name}")
+        bpy.context.scene.camera = obj
+        return {"name": obj.name, "active": True}
+
+    def create_collection(self, name, parent_name=None):
+        new_col = bpy.data.collections.new(name)
+        if parent_name:
+            parent = bpy.data.collections.get(parent_name)
+            if not parent:
+                raise ValueError(f"Parent collection not found: {parent_name}")
+            parent.children.link(new_col)
+        else:
+            bpy.context.scene.collection.children.link(new_col)
+        return {"name": new_col.name, "parent": parent_name}
+
+    def delete_collection(self, collection_name, delete_objects=False):
+        col = bpy.data.collections.get(collection_name)
+        if not col:
+            raise ValueError(f"Collection not found: {collection_name}")
+        if delete_objects:
+            for obj in list(col.objects):
+                bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.collections.remove(col)
+        return {"deleted": collection_name, "objects_deleted": delete_objects}
+
+    def move_to_collection(self, object_name, collection_name, unlink_from_current=True):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        target = bpy.data.collections.get(collection_name)
+        if not target:
+            raise ValueError(f"Collection not found: {collection_name}")
+        if unlink_from_current:
+            for col in obj.users_collection:
+                col.objects.unlink(obj)
+        target.objects.link(obj)
+        return {"object": obj.name, "collection": target.name}
+
+    def set_collection_visibility(self, collection_name, hide_viewport=None, hide_render=None):
+        col = bpy.data.collections.get(collection_name)
+        if not col:
+            raise ValueError(f"Collection not found: {collection_name}")
+        if hide_viewport is not None:
+            col.hide_viewport = hide_viewport
+        if hide_render is not None:
+            col.hide_render = hide_render
+        return {"name": col.name, "hide_viewport": col.hide_viewport, "hide_render": col.hide_render}
+
+    def create_material(self, name, object_name=None, base_color=None, roughness=0.5, metallic=0.0):
+        mat = bpy.data.materials.new(name=name)
+        mat.use_nodes = True
+        bsdf = self._get_principled_bsdf(mat)
+        if bsdf:
+            if base_color is not None:
+                color = list(base_color)
+                while len(color) < 4:
+                    color.append(1.0)
+                bsdf.inputs['Base Color'].default_value = color[:4]
+            bsdf.inputs['Roughness'].default_value = roughness
+            bsdf.inputs['Metallic'].default_value = metallic
+        if object_name:
+            obj = bpy.data.objects.get(object_name)
+            if obj and hasattr(obj.data, 'materials'):
+                obj.data.materials.append(mat)
+        return {"name": mat.name, "assigned_to": object_name}
+
+    def assign_material(self, object_name, material_name, slot_index=None):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        mat = bpy.data.materials.get(material_name)
+        if not mat:
+            raise ValueError(f"Material not found: {material_name}")
+        if slot_index is not None and slot_index < len(obj.material_slots):
+            obj.material_slots[slot_index].material = mat
+        else:
+            obj.data.materials.append(mat)
+        return {"object": obj.name, "material": mat.name}
+
+    def set_material_property(self, material_name, property_name, value):
+        mat = bpy.data.materials.get(material_name)
+        if not mat:
+            raise ValueError(f"Material not found: {material_name}")
+        bsdf = self._get_principled_bsdf(mat)
+        if not bsdf:
+            raise ValueError(f"Material '{material_name}' has no Principled BSDF node")
+
+        name_map = {
+            "Subsurface": "Subsurface Weight" if bpy.app.version >= (4, 0, 0) else "Subsurface",
+            "Specular": "Specular IOR Level" if bpy.app.version >= (4, 0, 0) else "Specular",
+            "Transmission": "Transmission Weight" if bpy.app.version >= (4, 0, 0) else "Transmission",
+            "Coat": "Coat Weight" if bpy.app.version >= (4, 0, 0) else "Clearcoat",
+            "Sheen": "Sheen Weight" if bpy.app.version >= (4, 0, 0) else "Sheen",
+            "Emission": "Emission Color" if bpy.app.version >= (4, 0, 0) else "Emission",
+        }
+        resolved_name = name_map.get(property_name, property_name)
+
+        if resolved_name not in bsdf.inputs:
+            available = [inp.name for inp in bsdf.inputs]
+            raise ValueError(f"Property '{resolved_name}' not found. Available: {available}")
+
+        inp = bsdf.inputs[resolved_name]
+        if isinstance(value, list) and hasattr(inp.default_value, '__len__'):
+            while len(value) < len(inp.default_value):
+                value.append(value[-1] if value else 0)
+            inp.default_value = value[:len(inp.default_value)]
+        else:
+            inp.default_value = value
+        return {"material": mat.name, "property": resolved_name, "value": value}
+
+    def set_frame_range(self, start_frame=None, end_frame=None, current_frame=None, fps=None):
+        scene = bpy.context.scene
+        if start_frame is not None:
+            scene.frame_start = int(start_frame)
+        if end_frame is not None:
+            scene.frame_end = int(end_frame)
+        if current_frame is not None:
+            scene.frame_set(int(current_frame))
+        if fps is not None:
+            scene.render.fps = int(fps)
+        return {
+            "frame_start": scene.frame_start,
+            "frame_end": scene.frame_end,
+            "frame_current": scene.frame_current,
+            "fps": scene.render.fps,
+        }
+
+    def insert_keyframe(self, object_name, property_path, frame, value=None, index=-1):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+
+        scene = bpy.context.scene
+        original_frame = scene.frame_current
+        scene.frame_set(int(frame))
+
+        if value is not None:
+            prop = obj.path_resolve(property_path)
+            if hasattr(prop, '__len__') and index >= 0:
+                prop[index] = value
+            elif hasattr(prop, '__len__') and isinstance(value, (list, tuple)):
+                for i, v in enumerate(value):
+                    prop[i] = v
+            else:
+                setattr(obj, property_path, value)
+
+        obj.keyframe_insert(data_path=property_path, frame=frame, index=index)
+        scene.frame_set(original_frame)
+        return {"object": obj.name, "property": property_path, "frame": frame}
+
+    def delete_keyframe(self, object_name, property_path, frame, index=-1):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        obj.keyframe_delete(data_path=property_path, frame=frame, index=index)
+        return {"object": obj.name, "property": property_path, "frame": frame, "deleted": True}
 
     def get_viewport_screenshot(self, max_size=800, filepath=None, format="png"):
         """
