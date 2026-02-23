@@ -1,5 +1,6 @@
 # AI
 .claude
+.mcp.json
 
 # Python-generated files
 __pycache__/
