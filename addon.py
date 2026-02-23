@@ -710,6 +710,7 @@ class BlenderMCPServer:
             return {"error": str(e)}
 
     def download_polyhaven_asset(self, asset_id, asset_type, resolution="1k", file_format=None):
+        self._set_operation_status(f"Downloading PolyHaven asset: {asset_id}...")
         try:
             files_response = requests.get(f"https://api.polyhaven.com/files/{asset_id}", headers=REQ_HEADERS)
             if files_response.status_code != 200:
@@ -793,6 +794,11 @@ class BlenderMCPServer:
                         }
                     except Exception as e:
                         return {"error": f"Failed to set up HDRI in Blender: {str(e)}"}
+                    finally:
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
                 else:
                     return {"error": f"Requested resolution or format not available for this HDRI"}
 
@@ -986,6 +992,8 @@ class BlenderMCPServer:
 
         except Exception as e:
             return {"error": f"Failed to download asset: {str(e)}"}
+        finally:
+            self._set_operation_status("")
 
     def set_texture(self, object_name, texture_id):
         """Apply a previously downloaded Polyhaven texture to an object by creating a new material"""
@@ -1293,13 +1301,17 @@ class BlenderMCPServer:
             }
 
     def create_rodin_job(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.create_rodin_job_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.create_rodin_job_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
+        self._set_operation_status("Creating Hyper3D Rodin job...")
+        try:
+            match bpy.context.scene.blendermcp_hyper3d_mode:
+                case "MAIN_SITE":
+                    return self.create_rodin_job_main_site(*args, **kwargs)
+                case "FAL_AI":
+                    return self.create_rodin_job_fal_ai(*args, **kwargs)
+                case _:
+                    return f"Error: Unknown Hyper3D Rodin mode!"
+        finally:
+            self._set_operation_status("")
 
     def create_rodin_job_main_site(
             self,
@@ -1519,6 +1531,11 @@ class BlenderMCPServer:
             }
         except Exception as e:
             return {"succeed": False, "error": str(e)}
+        finally:
+            try:
+                os.unlink(temp_file.name)
+            except Exception:
+                pass
 
     def import_generated_asset_fal_ai(self, request_id: str, name: str):
         """Fetch the generated asset, import into blender"""
@@ -1573,8 +1590,13 @@ class BlenderMCPServer:
             }
         except Exception as e:
             return {"succeed": False, "error": str(e)}
+        finally:
+            try:
+                os.unlink(temp_file.name)
+            except Exception:
+                pass
     #endregion
- 
+
     #region Sketchfab API
     def get_sketchfab_status(self):
         """Get the current status of Sketchfab integration"""
@@ -1782,6 +1804,7 @@ class BlenderMCPServer:
         - normalize_size: If True, scale the model so its largest dimension equals target_size
         - target_size: The target size in Blender units (meters) for the largest dimension
         """
+        self._set_operation_status(f"Downloading Sketchfab model: {uid}...")
         try:
             api_key = bpy.context.scene.blendermcp_sketchfab_api_key
             if not api_key:
@@ -1971,6 +1994,8 @@ class BlenderMCPServer:
             import traceback
             traceback.print_exc()
             return {"error": f"Failed to download model: {str(e)}"}
+        finally:
+            self._set_operation_status("")
     #endregion
 
     #region Hunyuan3D
@@ -2098,13 +2123,17 @@ class BlenderMCPServer:
         return headers, endpoint
 
     def create_hunyuan_job(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hunyuan3d_mode:
-            case "OFFICIAL_API":
-                return self.create_hunyuan_job_main_site(*args, **kwargs)
-            case "LOCAL_API":
-                return self.create_hunyuan_job_local_site(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hunyuan3D mode!"
+        self._set_operation_status("Creating Hunyuan3D job...")
+        try:
+            match bpy.context.scene.blendermcp_hunyuan3d_mode:
+                case "OFFICIAL_API":
+                    return self.create_hunyuan_job_main_site(*args, **kwargs)
+                case "LOCAL_API":
+                    return self.create_hunyuan_job_local_site(*args, **kwargs)
+                case _:
+                    return f"Error: Unknown Hunyuan3D mode!"
+        finally:
+            self._set_operation_status("")
 
     def create_hunyuan_job_main_site(
         self,
@@ -2369,6 +2398,28 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         default=True
     )
 
+    log_to_file: BoolProperty(
+        name="Log to File",
+        description="Write logs to blendermcp.log in Blender config directory",
+        default=False,
+        update=lambda self, ctx: self._toggle_file_logging()
+    )
+
+    def _toggle_file_logging(self):
+        from logging.handlers import RotatingFileHandler
+        handler_name = "blendermcp_file"
+        for h in logger.handlers[:]:
+            if getattr(h, 'name', '') == handler_name:
+                logger.removeHandler(h)
+                h.close()
+        if self.log_to_file:
+            log_dir = bpy.utils.user_resource('CONFIG')
+            log_path = os.path.join(log_dir, "blendermcp.log")
+            fh = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3)
+            fh.name = handler_name
+            fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            logger.addHandler(fh)
+
     def draw(self, context):
         layout = self.layout
 
@@ -2391,6 +2442,10 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         row = box.row()
         row.operator("blendermcp.open_terms", text="View Terms and Conditions", icon='TEXT')
 
+        layout.separator()
+        layout.label(text="Logging:", icon='TEXT')
+        box = layout.box()
+        box.prop(self, "log_to_file", text="Log to File")
 
 class BLENDERMCP_PT_Panel(bpy.types.Panel):
     bl_label = "Blender MCP"
@@ -2430,10 +2485,13 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
                 layout.prop(scene, "blendermcp_hunyuan3d_texture", text="Generate Texture")
         
         if not scene.blendermcp_server_running:
+            layout.prop(scene, "blendermcp_auth_token", text="Auth Token")
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
         else:
             layout.operator("blendermcp.stop_server", text="Disconnect from MCP server")
             layout.label(text=f"Running on port {scene.blendermcp_port}")
+            if scene.blendermcp_current_operation:
+                layout.label(text=scene.blendermcp_current_operation, icon='SORTTIME')
 
 class BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey(bpy.types.Operator):
     bl_idname = "blendermcp.set_hyper3d_free_trial_api_key"
