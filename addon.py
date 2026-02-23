@@ -284,6 +284,18 @@ class BlenderMCPServer:
             "set_frame_range": self.set_frame_range,
             "insert_keyframe": self.insert_keyframe,
             "delete_keyframe": self.delete_keyframe,
+            "add_modifier": self.add_modifier,
+            "remove_modifier": self.remove_modifier,
+            "set_modifier_params": self.set_modifier_params,
+            "apply_modifier": self.apply_modifier,
+            "add_constraint": self.add_constraint,
+            "remove_constraint": self.remove_constraint,
+            "set_constraint_params": self.set_constraint_params,
+            "uv_unwrap": self.uv_unwrap,
+            "set_vertex_group": self.set_vertex_group,
+            "set_render_settings": self.set_render_settings,
+            "render_image": self.render_image,
+            "frame_selected": self.frame_selected,
             "get_viewport_screenshot": self.get_viewport_screenshot,
             "execute_code": self.execute_code,
             "get_telemetry_consent": self.get_telemetry_consent,
@@ -1122,6 +1134,304 @@ class BlenderMCPServer:
             raise ValueError(f"Object not found: {object_name}")
         obj.keyframe_delete(data_path=property_path, frame=frame, index=index)
         return {"object": obj.name, "property": property_path, "frame": frame, "deleted": True}
+
+    def add_modifier(self, object_name, modifier_type, name=None, params=None):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        mod = obj.modifiers.new(name=name or modifier_type, type=modifier_type)
+        if params:
+            if isinstance(params, str):
+                params = json.loads(params)
+            for key, val in params.items():
+                if hasattr(mod, key):
+                    prop = getattr(mod, key)
+                    if isinstance(prop, bpy.types.Object.__class__) or key in ('object', 'mirror_object', 'target'):
+                        ref = bpy.data.objects.get(val)
+                        if ref:
+                            setattr(mod, key, ref)
+                    else:
+                        setattr(mod, key, val)
+        return {"object": obj.name, "modifier": mod.name, "type": mod.type}
+
+    def remove_modifier(self, object_name, modifier_name):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        mod = obj.modifiers.get(modifier_name)
+        if not mod:
+            raise ValueError(f"Modifier not found: {modifier_name}")
+        obj.modifiers.remove(mod)
+        return {"object": obj.name, "removed": modifier_name}
+
+    def set_modifier_params(self, object_name, modifier_name, params):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        mod = obj.modifiers.get(modifier_name)
+        if not mod:
+            raise ValueError(f"Modifier not found: {modifier_name}")
+        if isinstance(params, str):
+            params = json.loads(params)
+        for key, val in params.items():
+            if hasattr(mod, key):
+                if key in ('object', 'mirror_object', 'target'):
+                    ref = bpy.data.objects.get(val)
+                    if ref:
+                        setattr(mod, key, ref)
+                else:
+                    setattr(mod, key, val)
+        return {"object": obj.name, "modifier": mod.name, "updated": True}
+
+    def apply_modifier(self, object_name, modifier_name):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        mod = obj.modifiers.get(modifier_name)
+        if not mod:
+            raise ValueError(f"Modifier not found: {modifier_name}")
+
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        if obj.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        bpy.ops.object.modifier_apply(modifier=modifier_name)
+
+        result = {"object": obj.name, "applied": modifier_name}
+        if obj.type == 'MESH' and obj.data:
+            mesh = obj.data
+            result["mesh_stats"] = {
+                "vertices": len(mesh.vertices),
+                "edges": len(mesh.edges),
+                "polygons": len(mesh.polygons),
+            }
+        return result
+
+    def add_constraint(self, object_name, constraint_type, name=None, target=None, params=None):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        con = obj.constraints.new(type=constraint_type)
+        if name:
+            con.name = name
+        if target:
+            target_obj = bpy.data.objects.get(target)
+            if target_obj and hasattr(con, 'target'):
+                con.target = target_obj
+        if params:
+            if isinstance(params, str):
+                params = json.loads(params)
+            for key, val in params.items():
+                if hasattr(con, key):
+                    if key == 'target':
+                        ref = bpy.data.objects.get(val)
+                        if ref:
+                            con.target = ref
+                    else:
+                        setattr(con, key, val)
+        return {"object": obj.name, "constraint": con.name, "type": con.type}
+
+    def remove_constraint(self, object_name, constraint_name):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        con = obj.constraints.get(constraint_name)
+        if not con:
+            raise ValueError(f"Constraint not found: {constraint_name}")
+        obj.constraints.remove(con)
+        return {"object": obj.name, "removed": constraint_name}
+
+    def set_constraint_params(self, object_name, constraint_name, params):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        con = obj.constraints.get(constraint_name)
+        if not con:
+            raise ValueError(f"Constraint not found: {constraint_name}")
+        if isinstance(params, str):
+            params = json.loads(params)
+        for key, val in params.items():
+            if hasattr(con, key):
+                if key == 'target':
+                    ref = bpy.data.objects.get(val)
+                    if ref:
+                        con.target = ref
+                else:
+                    setattr(con, key, val)
+        return {"object": obj.name, "constraint": con.name, "updated": True}
+
+    def uv_unwrap(self, object_name, method="SMART_PROJECT", angle_limit=66.0, island_margin=0.001, uv_layer_name=None):
+        import math
+        obj = bpy.data.objects.get(object_name)
+        if not obj or obj.type != 'MESH':
+            raise ValueError(f"Mesh object not found: {object_name}")
+
+        if uv_layer_name:
+            if uv_layer_name not in obj.data.uv_layers:
+                obj.data.uv_layers.new(name=uv_layer_name)
+            obj.data.uv_layers.active = obj.data.uv_layers[uv_layer_name]
+
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+
+        if method == "SMART_PROJECT":
+            bpy.ops.uv.smart_project(angle_limit=math.radians(angle_limit), island_margin=island_margin)
+        elif method == "CUBE_PROJECT":
+            bpy.ops.uv.cube_project()
+        elif method == "CYLINDER_PROJECT":
+            bpy.ops.uv.cylinder_project()
+        elif method == "SPHERE_PROJECT":
+            bpy.ops.uv.sphere_project()
+        elif method == "UNWRAP":
+            bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=island_margin)
+        else:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            raise ValueError(f"Unknown unwrap method: {method}")
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+        active_uv = obj.data.uv_layers.active.name if obj.data.uv_layers.active else None
+        return {"object": obj.name, "method": method, "uv_layer": active_uv}
+
+    def set_vertex_group(self, object_name, group_name, vertex_indices, weight=1.0, action="REPLACE"):
+        obj = bpy.data.objects.get(object_name)
+        if not obj or obj.type != 'MESH':
+            raise ValueError(f"Mesh object not found: {object_name}")
+
+        vg = obj.vertex_groups.get(group_name)
+        if not vg:
+            vg = obj.vertex_groups.new(name=group_name)
+
+        if action == "REPLACE":
+            vg.add(vertex_indices, weight, 'REPLACE')
+        elif action == "ADD":
+            vg.add(vertex_indices, weight, 'ADD')
+        elif action == "SUBTRACT":
+            vg.add(vertex_indices, weight, 'SUBTRACT')
+        elif action == "REMOVE":
+            vg.remove(vertex_indices)
+        else:
+            raise ValueError(f"Unknown action: {action}")
+
+        return {"object": obj.name, "group": vg.name, "vertex_count": len(vertex_indices), "action": action}
+
+    def set_render_settings(self, engine=None, resolution_x=None, resolution_y=None, samples=None, denoising=None, output_format=None, film_transparent=None):
+        scene = bpy.context.scene
+        render = scene.render
+
+        if engine is not None:
+            render.engine = engine
+        if resolution_x is not None:
+            render.resolution_x = resolution_x
+        if resolution_y is not None:
+            render.resolution_y = resolution_y
+        if output_format is not None:
+            render.image_settings.file_format = output_format
+        if film_transparent is not None:
+            render.film_transparent = film_transparent
+
+        if samples is not None:
+            if render.engine == 'CYCLES':
+                scene.cycles.samples = samples
+            elif render.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
+                scene.eevee.taa_render_samples = samples
+
+        if denoising is not None and render.engine == 'CYCLES':
+            scene.cycles.use_denoising = denoising
+
+        return {
+            "engine": render.engine,
+            "resolution": [render.resolution_x, render.resolution_y],
+            "output_format": render.image_settings.file_format,
+        }
+
+    def render_image(self, animation=False, filepath=None):
+        scene = bpy.context.scene
+
+        if animation:
+            if filepath:
+                scene.render.filepath = filepath
+            bpy.ops.render.render(animation=True)
+            return {"rendered": True, "animation": True, "filepath": scene.render.filepath}
+        else:
+            tmp_path = filepath
+            if not tmp_path:
+                tmp_path = os.path.join(tempfile.gettempdir(), f"blender_render_{os.getpid()}.png")
+
+            scene.render.filepath = tmp_path
+            bpy.ops.render.render(write_still=True)
+
+            if os.path.exists(tmp_path):
+                return {
+                    "rendered": True,
+                    "animation": False,
+                    "filepath": tmp_path,
+                    "resolution": [scene.render.resolution_x, scene.render.resolution_y],
+                }
+            else:
+                raise Exception("Render failed - output file not created")
+
+    def frame_selected(self, camera_name=None, object_names=None):
+        import math
+
+        if camera_name:
+            cam_obj = bpy.data.objects.get(camera_name)
+            if not cam_obj or cam_obj.type != 'CAMERA':
+                raise ValueError(f"Camera not found: {camera_name}")
+        else:
+            cam_obj = bpy.context.scene.camera
+            if not cam_obj:
+                raise ValueError("No active camera in scene")
+
+        if not object_names:
+            object_names = [obj.name for obj in bpy.context.selected_objects]
+        if not object_names:
+            raise ValueError("No objects specified or selected")
+
+        all_min = mathutils.Vector((float('inf'), float('inf'), float('inf')))
+        all_max = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
+
+        for name in object_names:
+            obj = bpy.data.objects.get(name)
+            if not obj:
+                continue
+            for corner in obj.bound_box:
+                world_corner = obj.matrix_world @ mathutils.Vector(corner)
+                all_min.x = min(all_min.x, world_corner.x)
+                all_min.y = min(all_min.y, world_corner.y)
+                all_min.z = min(all_min.z, world_corner.z)
+                all_max.x = max(all_max.x, world_corner.x)
+                all_max.y = max(all_max.y, world_corner.y)
+                all_max.z = max(all_max.z, world_corner.z)
+
+        center = (all_min + all_max) / 2
+        dims = all_max - all_min
+        max_dim = max(dims.x, dims.y, dims.z)
+
+        if max_dim <= 0:
+            raise ValueError("Objects have zero bounding box size")
+
+        cam_data = cam_obj.data
+        fov = cam_data.angle
+        distance = (max_dim / (2 * math.tan(fov / 2))) * 1.5
+
+        direction = mathutils.Vector((0, -1, 0.3)).normalized()
+        cam_obj.location = center - direction * distance
+
+        direction_to_target = center - cam_obj.location
+        rot = direction_to_target.to_track_quat('-Z', 'Y')
+        cam_obj.rotation_euler = rot.to_euler()
+
+        bpy.context.scene.camera = cam_obj
+
+        return {
+            "camera": cam_obj.name,
+            "target_center": list(center),
+            "distance": distance,
+            "location": list(cam_obj.location),
+        }
 
     def get_viewport_screenshot(self, max_size=800, filepath=None, format="png"):
         """

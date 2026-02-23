@@ -847,6 +847,273 @@ def delete_keyframe(ctx: Context, object_name: str, property_path: str, frame: i
 
 
 @mcp.tool()
+def add_modifier(ctx: Context, object_name: str, modifier_type: str, name: str = None, params: str = None) -> str:
+    """
+    Add a modifier to an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_type: Blender modifier type (e.g. SUBSURF, BOOLEAN, ARRAY, MIRROR, SOLIDIFY)
+    - name: Optional name for the modifier
+    - params: Optional JSON string of modifier parameters (e.g. '{"levels": 2}')
+    """
+    try:
+        blender = get_blender_connection()
+        cmd_params = {"object_name": object_name, "modifier_type": modifier_type}
+        if name: cmd_params["name"] = name
+        if params: cmd_params["params"] = params
+        result = blender.send_command("add_modifier", cmd_params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error adding modifier: {str(e)}"
+
+
+@mcp.tool()
+def remove_modifier(ctx: Context, object_name: str, modifier_name: str) -> str:
+    """
+    Remove a modifier from an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_name: Name of the modifier to remove
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("remove_modifier", {"object_name": object_name, "modifier_name": modifier_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error removing modifier: {str(e)}"
+
+
+@mcp.tool()
+def set_modifier_params(ctx: Context, object_name: str, modifier_name: str, params: str) -> str:
+    """
+    Set parameters on an existing modifier.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_name: Name of the modifier
+    - params: JSON string of parameters to set (e.g. '{"levels": 3, "render_levels": 4}')
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_modifier_params", {
+            "object_name": object_name, "modifier_name": modifier_name, "params": params
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting modifier params: {str(e)}"
+
+
+@mcp.tool()
+def apply_modifier(ctx: Context, object_name: str, modifier_name: str) -> str:
+    """
+    Apply a modifier, baking it into the mesh.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_name: Name of the modifier to apply
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("apply_modifier", {"object_name": object_name, "modifier_name": modifier_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error applying modifier: {str(e)}"
+
+
+@mcp.tool()
+def add_constraint(ctx: Context, object_name: str, constraint_type: str, name: str = None, target: str = None, params: str = None) -> str:
+    """
+    Add a constraint to an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - constraint_type: Blender constraint type (e.g. TRACK_TO, COPY_LOCATION, CHILD_OF, LIMIT_ROTATION)
+    - name: Optional name for the constraint
+    - target: Optional target object name
+    - params: Optional JSON string of constraint parameters
+    """
+    try:
+        blender = get_blender_connection()
+        cmd_params = {"object_name": object_name, "constraint_type": constraint_type}
+        if name: cmd_params["name"] = name
+        if target: cmd_params["target"] = target
+        if params: cmd_params["params"] = params
+        result = blender.send_command("add_constraint", cmd_params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error adding constraint: {str(e)}"
+
+
+@mcp.tool()
+def remove_constraint(ctx: Context, object_name: str, constraint_name: str) -> str:
+    """
+    Remove a constraint from an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - constraint_name: Name of the constraint to remove
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("remove_constraint", {"object_name": object_name, "constraint_name": constraint_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error removing constraint: {str(e)}"
+
+
+@mcp.tool()
+def set_constraint_params(ctx: Context, object_name: str, constraint_name: str, params: str) -> str:
+    """
+    Set parameters on an existing constraint.
+
+    Parameters:
+    - object_name: Name of the object
+    - constraint_name: Name of the constraint
+    - params: JSON string of parameters to set
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_constraint_params", {
+            "object_name": object_name, "constraint_name": constraint_name, "params": params
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting constraint params: {str(e)}"
+
+
+@mcp.tool()
+def uv_unwrap(ctx: Context, object_name: str, method: str = "SMART_PROJECT", angle_limit: float = 66.0, island_margin: float = 0.001, uv_layer_name: str = None) -> str:
+    """
+    UV unwrap a mesh object.
+
+    Parameters:
+    - object_name: Name of the mesh object
+    - method: Unwrap method (SMART_PROJECT, CUBE_PROJECT, CYLINDER_PROJECT, SPHERE_PROJECT, UNWRAP)
+    - angle_limit: Angle limit in degrees for smart project (default: 66)
+    - island_margin: Margin between UV islands (default: 0.001)
+    - uv_layer_name: Optional UV layer name (creates if doesn't exist)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "method": method, "angle_limit": angle_limit, "island_margin": island_margin}
+        if uv_layer_name: params["uv_layer_name"] = uv_layer_name
+        result = blender.send_command("uv_unwrap", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error UV unwrapping: {str(e)}"
+
+
+@mcp.tool()
+def set_vertex_group(ctx: Context, object_name: str, group_name: str, vertex_indices: list, weight: float = 1.0, action: str = "REPLACE") -> str:
+    """
+    Create or modify a vertex group on a mesh object.
+
+    Parameters:
+    - object_name: Name of the mesh object
+    - group_name: Vertex group name (created if doesn't exist)
+    - vertex_indices: List of vertex indices to add/modify
+    - weight: Weight value 0-1 (default: 1.0)
+    - action: REPLACE, ADD, SUBTRACT, or REMOVE (default: REPLACE)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_vertex_group", {
+            "object_name": object_name, "group_name": group_name,
+            "vertex_indices": vertex_indices, "weight": weight, "action": action
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting vertex group: {str(e)}"
+
+
+@mcp.tool()
+def set_render_settings(
+    ctx: Context,
+    engine: str = None,
+    resolution_x: int = None,
+    resolution_y: int = None,
+    samples: int = None,
+    denoising: bool = None,
+    output_format: str = None,
+    film_transparent: bool = None
+) -> str:
+    """
+    Configure render settings.
+
+    Parameters:
+    - engine: Render engine (CYCLES, BLENDER_EEVEE, BLENDER_EEVEE_NEXT, BLENDER_WORKBENCH)
+    - resolution_x: Horizontal resolution in pixels
+    - resolution_y: Vertical resolution in pixels
+    - samples: Render samples (engine-aware)
+    - denoising: Enable denoising (Cycles only)
+    - output_format: Output file format (PNG, JPEG, OPEN_EXR, etc.)
+    - film_transparent: Transparent film background
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        for key, val in [("engine", engine), ("resolution_x", resolution_x), ("resolution_y", resolution_y),
+                         ("samples", samples), ("denoising", denoising), ("output_format", output_format),
+                         ("film_transparent", film_transparent)]:
+            if val is not None:
+                params[key] = val
+        result = blender.send_command("set_render_settings", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting render settings: {str(e)}"
+
+
+@mcp.tool()
+def render_image(ctx: Context, animation: bool = False) -> Image | str:
+    """
+    Render the current scene. Returns an Image for single frames or a status string for animations.
+
+    Parameters:
+    - animation: If True, render the full animation sequence instead of a single frame
+    """
+    try:
+        blender = get_blender_connection()
+        if animation:
+            result = blender.send_command("render_image", {"animation": True})
+            return f"Animation rendered to: {result.get('filepath', 'default output path')}"
+        else:
+            temp_path = os.path.join(tempfile.gettempdir(), f"blender_render_{os.getpid()}.png")
+            result = blender.send_command("render_image", {"animation": False, "filepath": temp_path})
+
+            if result.get("rendered") and os.path.exists(temp_path):
+                with open(temp_path, 'rb') as f:
+                    image_bytes = f.read()
+                os.remove(temp_path)
+                return Image(data=image_bytes, format="png")
+            else:
+                return f"Render result: {json.dumps(result)}"
+    except Exception as e:
+        return f"Error rendering: {str(e)}"
+
+
+@mcp.tool()
+def frame_selected(ctx: Context, camera_name: str = None, object_names: list = None) -> str:
+    """
+    Position camera to frame selected/specified objects.
+
+    Parameters:
+    - camera_name: Optional camera name (uses active camera if omitted)
+    - object_names: Optional list of object names to frame (uses selection if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        if camera_name: params["camera_name"] = camera_name
+        if object_names: params["object_names"] = object_names
+        result = blender.send_command("frame_selected", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error framing objects: {str(e)}"
+
+
+@mcp.tool()
 def reload_addon(ctx: Context) -> str:
     """
     Reload the Blender addon from disk. Use after modifying addon.py.
