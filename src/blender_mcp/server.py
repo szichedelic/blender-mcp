@@ -1324,6 +1324,68 @@ def set_keyframe_interpolation(
 
 
 @mcp.tool()
+def create_shader_node(
+    ctx: Context,
+    material_name: str,
+    node_type: str,
+    name: str = None,
+    location: list = None,
+    settings: str = None
+) -> str:
+    """
+    Create a new shader node in a material's node tree.
+
+    Parameters:
+    - material_name: Name of the material
+    - node_type: Blender shader node type (e.g. "ShaderNodeTexNoise", "ShaderNodeMixShader", "ShaderNodeBump")
+    - name: Optional name/label for the node
+    - location: Optional [x, y] position in the node editor
+    - settings: Optional JSON string of node settings (input default values and node properties)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"material_name": material_name, "node_type": node_type}
+        if name is not None: params["name"] = name
+        if location is not None: params["location"] = location
+        if settings is not None: params["settings"] = settings
+        result = blender.send_command("create_shader_node", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating shader node: {str(e)}"
+
+
+@mcp.tool()
+def connect_shader_nodes(
+    ctx: Context,
+    material_name: str,
+    from_node: str,
+    from_socket: str,
+    to_node: str,
+    to_socket: str
+) -> str:
+    """
+    Connect two shader nodes in a material's node tree.
+
+    Parameters:
+    - material_name: Name of the material
+    - from_node: Name of the source node
+    - from_socket: Name or index of the output socket on the source node
+    - to_node: Name of the destination node
+    - to_socket: Name or index of the input socket on the destination node
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("connect_shader_nodes", {
+            "material_name": material_name,
+            "from_node": from_node, "from_socket": from_socket,
+            "to_node": to_node, "to_socket": to_socket,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error connecting shader nodes: {str(e)}"
+
+
+@mcp.tool()
 def select_objects(
     ctx: Context,
     names: list = None,

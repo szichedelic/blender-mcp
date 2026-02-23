@@ -294,6 +294,8 @@ class BlenderMCPServer:
             "separate_object": self.separate_object,
             "set_playback": self.set_playback,
             "set_keyframe_interpolation": self.set_keyframe_interpolation,
+            "create_shader_node": self.create_shader_node,
+            "connect_shader_nodes": self.connect_shader_nodes,
             "select_objects": self.select_objects,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
@@ -1691,6 +1693,65 @@ class BlenderMCPServer:
                 kp.interpolation = interpolation
                 count += 1
         return {"object": obj.name, "interpolation": interpolation, "modified_count": count}
+
+    def create_shader_node(self, material_name, node_type, name=None, location=None, settings=None):
+        mat = bpy.data.materials.get(material_name)
+        if not mat:
+            raise ValueError(f"Material not found: {material_name}")
+        if not mat.use_nodes or not mat.node_tree:
+            raise ValueError(f"Material '{material_name}' does not use nodes")
+        node = mat.node_tree.nodes.new(type=node_type)
+        if name:
+            node.name = name
+            node.label = name
+        if location:
+            node.location = location
+        if settings:
+            if isinstance(settings, str):
+                import json as _json
+                settings = _json.loads(settings)
+            for key, value in settings.items():
+                if key in node.inputs:
+                    node.inputs[key].default_value = value
+                elif hasattr(node, key):
+                    setattr(node, key, value)
+        return {
+            "node": node.name,
+            "type": node.type,
+            "location": list(node.location),
+            "inputs": [inp.name for inp in node.inputs],
+            "outputs": [out.name for out in node.outputs],
+        }
+
+    def connect_shader_nodes(self, material_name, from_node, from_socket, to_node, to_socket):
+        mat = bpy.data.materials.get(material_name)
+        if not mat:
+            raise ValueError(f"Material not found: {material_name}")
+        if not mat.use_nodes or not mat.node_tree:
+            raise ValueError(f"Material '{material_name}' does not use nodes")
+        node_from = mat.node_tree.nodes.get(from_node)
+        if not node_from:
+            raise ValueError(f"Node not found: {from_node}")
+        node_to = mat.node_tree.nodes.get(to_node)
+        if not node_to:
+            raise ValueError(f"Node not found: {to_node}")
+        if isinstance(from_socket, int):
+            output_socket = node_from.outputs[from_socket]
+        else:
+            output_socket = node_from.outputs.get(from_socket)
+            if not output_socket:
+                raise ValueError(f"Output socket '{from_socket}' not found on node '{from_node}'")
+        if isinstance(to_socket, int):
+            input_socket = node_to.inputs[to_socket]
+        else:
+            input_socket = node_to.inputs.get(to_socket)
+            if not input_socket:
+                raise ValueError(f"Input socket '{to_socket}' not found on node '{to_node}'")
+        mat.node_tree.links.new(output_socket, input_socket)
+        return {
+            "material": mat.name,
+            "link": {"from": f"{from_node}.{from_socket}", "to": f"{to_node}.{to_socket}"},
+        }
 
     def select_objects(self, names=None, type=None, material=None, deselect_first=True, active=None):
         if deselect_first:
