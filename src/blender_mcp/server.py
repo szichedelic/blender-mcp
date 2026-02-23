@@ -1,7 +1,7 @@
-# blender_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context, Image
 import socket
 import json
+import struct
 import asyncio
 import logging
 import tempfile
@@ -13,16 +13,46 @@ from pathlib import Path
 import base64
 from urllib.parse import urlparse
 
-# Import telemetry
 from .telemetry import record_startup, get_telemetry
 from .telemetry_decorator import telemetry_tool
 
-# Configure logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BlenderMCPServer")
 
-# Default configuration
+MAX_MESSAGE_SIZE = 50 * 1024 * 1024  # 50MB
+
+def send_message(sock, data_dict):
+    """Send a length-prefixed JSON message over a socket."""
+    payload = json.dumps(data_dict).encode('utf-8')
+    header = struct.pack('>I', len(payload))
+    sock.sendall(header + payload)
+
+def recv_message(sock, timeout=180.0):
+    """Receive a length-prefixed JSON message from a socket.
+    Returns the parsed dict, or raises on error/timeout."""
+    sock.settimeout(timeout)
+
+    header = b''
+    while len(header) < 4:
+        chunk = sock.recv(4 - len(header))
+        if not chunk:
+            raise ConnectionError("Connection closed while reading message header")
+        header += chunk
+
+    msg_len = struct.unpack('>I', header)[0]
+    if msg_len > MAX_MESSAGE_SIZE:
+        raise ValueError(f"Message size {msg_len} exceeds maximum {MAX_MESSAGE_SIZE}")
+
+    data = b''
+    while len(data) < msg_len:
+        chunk = sock.recv(min(msg_len - len(data), 65536))
+        if not chunk:
+            raise ConnectionError("Connection closed while reading message body")
+        data += chunk
+
+    return json.loads(data.decode('utf-8'))
+
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 9876
 
@@ -36,11 +66,23 @@ class BlenderConnection:
         """Connect to the Blender addon socket server"""
         if self.sock:
             return True
-            
+
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
             logger.info(f"Connected to Blender at {self.host}:{self.port}")
+
+            auth_token = os.getenv("BLENDER_AUTH_TOKEN", "")
+            if auth_token:
+                send_message(self.sock, {"type": "auth", "token": auth_token})
+                response = recv_message(self.sock, timeout=10.0)
+                if response.get("status") != "success":
+                    logger.error(f"Authentication failed: {response.get('message', 'Unknown error')}")
+                    self.sock.close()
+                    self.sock = None
+                    return False
+                logger.info("Authenticated with Blender addon")
+
             return True
         except Exception as e:
             logger.error(f"Failed to connect to Blender: {str(e)}")
@@ -57,146 +99,69 @@ class BlenderConnection:
             finally:
                 self.sock = None
 
-    def receive_full_response(self, sock, buffer_size=8192):
-        """Receive the complete response, potentially in multiple chunks"""
-        chunks = []
-        # Use a consistent timeout value that matches the addon's timeout
-        sock.settimeout(180.0)  # Match the addon's timeout
-        
-        try:
-            while True:
-                try:
-                    chunk = sock.recv(buffer_size)
-                    if not chunk:
-                        # If we get an empty chunk, the connection might be closed
-                        if not chunks:  # If we haven't received anything yet, this is an error
-                            raise Exception("Connection closed before receiving any data")
-                        break
-                    
-                    chunks.append(chunk)
-                    
-                    # Check if we've received a complete JSON object
-                    try:
-                        data = b''.join(chunks)
-                        json.loads(data.decode('utf-8'))
-                        # If we get here, it parsed successfully
-                        logger.info(f"Received complete response ({len(data)} bytes)")
-                        return data
-                    except json.JSONDecodeError:
-                        # Incomplete JSON, continue receiving
-                        continue
-                except socket.timeout:
-                    # If we hit a timeout during receiving, break the loop and try to use what we have
-                    logger.warning("Socket timeout during chunked receive")
-                    break
-                except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                    logger.error(f"Socket connection error during receive: {str(e)}")
-                    raise  # Re-raise to be handled by the caller
-        except socket.timeout:
-            logger.warning("Socket timeout during chunked receive")
-        except Exception as e:
-            logger.error(f"Error during receive: {str(e)}")
-            raise
-            
-        # If we get here, we either timed out or broke out of the loop
-        # Try to use what we have
-        if chunks:
-            data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
-            try:
-                # Try to parse what we have
-                json.loads(data.decode('utf-8'))
-                return data
-            except json.JSONDecodeError:
-                # If we can't parse it, it's incomplete
-                raise Exception("Incomplete JSON response received")
-        else:
-            raise Exception("No data received")
-
     def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Send a command to Blender and return the response"""
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to Blender")
-        
-        command = {
-            "type": command_type,
-            "params": params or {}
-        }
-        
-        try:
-            # Log the command being sent
-            logger.info(f"Sending command: {command_type} with params: {params}")
-            
-            # Send the command
-            self.sock.sendall(json.dumps(command).encode('utf-8'))
-            logger.info(f"Command sent, waiting for response...")
-            
-            # Set a timeout for receiving - use the same timeout as in receive_full_response
-            self.sock.settimeout(180.0)  # Match the addon's timeout
-            
-            # Receive the response using the improved receive_full_response method
-            response_data = self.receive_full_response(self.sock)
-            logger.info(f"Received {len(response_data)} bytes of data")
-            
-            response = json.loads(response_data.decode('utf-8'))
-            logger.info(f"Response parsed, status: {response.get('status', 'unknown')}")
-            
-            if response.get("status") == "error":
-                logger.error(f"Blender error: {response.get('message')}")
-                raise Exception(response.get("message", "Unknown error from Blender"))
-            
-            return response.get("result", {})
-        except socket.timeout:
-            logger.error("Socket timeout while waiting for response from Blender")
-            # Don't try to reconnect here - let the get_blender_connection handle reconnection
-            # Just invalidate the current socket so it will be recreated next time
-            self.sock = None
-            raise Exception("Timeout waiting for Blender response - try simplifying your request")
-        except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-            logger.error(f"Socket connection error: {str(e)}")
-            self.sock = None
-            raise Exception(f"Connection to Blender lost: {str(e)}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON response from Blender: {str(e)}")
-            # Try to log what was received
-            if 'response_data' in locals() and response_data:
-                logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-            raise Exception(f"Invalid response from Blender: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error communicating with Blender: {str(e)}")
-            # Don't try to reconnect here - let the get_blender_connection handle reconnection
-            self.sock = None
-            raise Exception(f"Communication error with Blender: {str(e)}")
+
+        command = {"type": command_type, "params": params or {}}
+        last_error = None
+
+        for attempt in range(2):
+            try:
+                if attempt > 0:
+                    logger.info(f"Retrying command: {command_type} (attempt {attempt + 1})")
+                    self.disconnect()
+                    if not self.connect():
+                        raise ConnectionError("Reconnection failed")
+
+                logger.info(f"Sending command: {command_type}")
+                send_message(self.sock, command)
+                response = recv_message(self.sock, timeout=180.0)
+                logger.info(f"Response received, status: {response.get('status', 'unknown')}")
+
+                if response.get("status") == "error":
+                    raise Exception(response.get("message", "Unknown error from Blender"))
+                return response.get("result", {})
+
+            except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
+                last_error = e
+                logger.warning(f"Connection error on attempt {attempt + 1}: {e}")
+                self.sock = None
+                if attempt == 0:
+                    continue
+            except socket.timeout:
+                self.sock = None
+                raise Exception("Timeout waiting for Blender response - try simplifying your request")
+            except json.JSONDecodeError as e:
+                self.sock = None
+                raise Exception(f"Invalid response from Blender: {e}")
+            except Exception:
+                self.sock = None
+                raise
+
+        raise Exception(f"Connection to Blender lost after retry: {last_error}")
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Manage server startup and shutdown lifecycle"""
-    # We don't need to create a connection here since we're using the global connection
-    # for resources and tools
-
     try:
-        # Just log that we're starting up
         logger.info("BlenderMCP server starting up")
 
-        # Record startup event for telemetry
         try:
             record_startup()
         except Exception as e:
             logger.debug(f"Failed to record startup telemetry: {e}")
 
-        # Try to connect to Blender on startup to verify it's available
         try:
-            # This will initialize the global connection if needed
             blender = get_blender_connection()
             logger.info("Successfully connected to Blender on startup")
         except Exception as e:
             logger.warning(f"Could not connect to Blender on startup: {str(e)}")
             logger.warning("Make sure the Blender addon is running before using Blender resources or tools")
 
-        # Return an empty context - we're using the global connection
         yield {}
     finally:
-        # Clean up the global connection on shutdown
         global _blender_connection
         if _blender_connection:
             logger.info("Disconnecting from Blender on shutdown")
@@ -204,62 +169,53 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
             _blender_connection = None
         logger.info("BlenderMCP server shut down")
 
-# Create the MCP server with lifespan support
 mcp = FastMCP(
     "BlenderMCP",
     lifespan=server_lifespan
 )
 
-# Resource endpoints
-
-# Global connection for resources (since resources can't access context)
 _blender_connection = None
-_polyhaven_enabled = False  # Add this global variable
 
 def get_blender_connection():
     """Get or create a persistent Blender connection"""
-    global _blender_connection, _polyhaven_enabled  # Add _polyhaven_enabled to globals
-    
-    # If we have an existing connection, check if it's still valid
+    global _blender_connection
+
     if _blender_connection is not None:
         try:
-            # First check if PolyHaven is enabled by sending a ping command
-            result = _blender_connection.send_command("get_polyhaven_status")
-            # Store the PolyHaven status globally
-            _polyhaven_enabled = result.get("enabled", False)
+            _blender_connection.send_command("ping")
             return _blender_connection
         except Exception as e:
-            # Connection is dead, close it and create a new one
-            logger.warning(f"Existing connection is no longer valid: {str(e)}")
+            logger.warning(f"Existing connection is no longer valid: {e}")
             try:
                 _blender_connection.disconnect()
-            except:
+            except Exception:
                 pass
             _blender_connection = None
-    
-    # Create a new connection if needed
-    if _blender_connection is None:
-        host = os.getenv("BLENDER_HOST", DEFAULT_HOST)
-        port = int(os.getenv("BLENDER_PORT", DEFAULT_PORT))
-        _blender_connection = BlenderConnection(host=host, port=port)
-        if not _blender_connection.connect():
-            logger.error("Failed to connect to Blender")
-            _blender_connection = None
-            raise Exception("Could not connect to Blender. Make sure the Blender addon is running.")
-        logger.info("Created new persistent connection to Blender")
-    
+
+    host = os.getenv("BLENDER_HOST", DEFAULT_HOST)
+    port = int(os.getenv("BLENDER_PORT", DEFAULT_PORT))
+    _blender_connection = BlenderConnection(host=host, port=port)
+    if not _blender_connection.connect():
+        logger.error("Failed to connect to Blender")
+        _blender_connection = None
+        raise Exception("Could not connect to Blender. Make sure the Blender addon is running.")
+    logger.info("Created new persistent connection to Blender")
+
     return _blender_connection
 
 
 @telemetry_tool("get_scene_info")
 @mcp.tool()
-def get_scene_info(ctx: Context) -> str:
-    """Get detailed information about the current Blender scene"""
+def get_scene_info(ctx: Context, offset: int = 0, limit: int = 50) -> str:
+    """Get detailed information about the current Blender scene.
+
+    Parameters:
+    - offset: Starting index for object list pagination (default: 0)
+    - limit: Maximum number of objects to return (default: 50)
+    """
     try:
         blender = get_blender_connection()
-        result = blender.send_command("get_scene_info")
-
-        # Just return the JSON representation of what Blender sent us
+        result = blender.send_command("get_scene_info", {"offset": offset, "limit": limit})
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting scene info from Blender: {str(e)}")
@@ -277,8 +233,6 @@ def get_object_info(ctx: Context, object_name: str) -> str:
     try:
         blender = get_blender_connection()
         result = blender.send_command("get_object_info", {"name": object_name})
-        
-        # Just return the JSON representation of what Blender sent us
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting object info from Blender: {str(e)}")
@@ -297,11 +251,10 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
     """
     try:
         blender = get_blender_connection()
-        
-        # Create temp file path
+
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, f"blender_screenshot_{os.getpid()}.png")
-        
+
         result = blender.send_command("get_viewport_screenshot", {
             "max_size": max_size,
             "filepath": temp_path,
@@ -313,12 +266,10 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
         
         if not os.path.exists(temp_path):
             raise Exception("Screenshot file was not created")
-        
-        # Read the file
+
         with open(temp_path, 'rb') as f:
             image_bytes = f.read()
-        
-        # Delete the temp file
+
         os.remove(temp_path)
         
         return Image(data=image_bytes, format="png")
@@ -330,21 +281,879 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
 
 @telemetry_tool("execute_blender_code")
 @mcp.tool()
-def execute_blender_code(ctx: Context, code: str) -> str:
+def execute_blender_code(ctx: Context, code: str, timeout: int = 30) -> str:
     """
     Execute arbitrary Python code in Blender. Make sure to do it step-by-step by breaking it into smaller chunks.
 
     Parameters:
     - code: The Python code to execute
+    - timeout: Maximum execution time in seconds (default: 30, max: 120)
     """
     try:
-        # Get the global connection
         blender = get_blender_connection()
-        result = blender.send_command("execute_code", {"code": code})
-        return f"Code executed successfully: {result.get('result', '')}"
+        result = blender.send_command("execute_code", {"code": code, "timeout": timeout})
+        output = "Code executed successfully."
+        if result.get('result'):
+            output += f"\nOutput: {result['result']}"
+        if result.get('stderr'):
+            output += f"\nStderr: {result['stderr']}"
+        if result.get('warning'):
+            output += f"\nWarning: {result['warning']}"
+        return output
     except Exception as e:
         logger.error(f"Error executing code: {str(e)}")
         return f"Error executing code: {str(e)}"
+
+
+@mcp.tool()
+def get_lights(ctx: Context) -> str:
+    """
+    Get a list of all lights in the scene with their properties.
+
+    Returns light names, types, energy, color, shadow settings, and transforms.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_lights")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting lights: {str(e)}")
+        return f"Error getting lights: {str(e)}"
+
+
+@mcp.tool()
+def get_render_settings(ctx: Context) -> str:
+    """
+    Get the current render settings including engine, resolution, samples, FPS, and output format.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_render_settings")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting render settings: {str(e)}")
+        return f"Error getting render settings: {str(e)}"
+
+
+@mcp.tool()
+def get_collections(ctx: Context) -> str:
+    """
+    Get the collection hierarchy of the current scene.
+
+    Returns a recursive tree of collections with their objects, visibility, and children.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_collections")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting collections: {str(e)}")
+        return f"Error getting collections: {str(e)}"
+
+
+@mcp.tool()
+def get_mesh_info(ctx: Context, object_name: str) -> str:
+    """
+    Get detailed mesh data for a mesh object.
+
+    Parameters:
+    - object_name: Name of the mesh object
+
+    Returns vertex/edge/polygon counts, UV layers, vertex groups, and shape keys.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_mesh_info", {"name": object_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting mesh info: {str(e)}")
+        return f"Error getting mesh info: {str(e)}"
+
+
+@mcp.tool()
+def get_animation_info(ctx: Context) -> str:
+    """
+    Get animation information for the current scene.
+
+    Returns frame range, FPS, current frame, and a list of keyframed objects with their animated property paths.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_animation_info")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting animation info: {str(e)}")
+        return f"Error getting animation info: {str(e)}"
+
+
+@mcp.tool()
+def get_keyframes(ctx: Context, object_name: str, property_path: str = None) -> str:
+    """
+    Get keyframe data for a specific object.
+
+    Parameters:
+    - object_name: Name of the object to read keyframes from
+    - property_path: Optional filter by property path (e.g. "location", "rotation_euler")
+
+    Returns fcurve data with frame numbers, values, and interpolation types.
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": object_name}
+        if property_path:
+            params["property_path"] = property_path
+        result = blender.send_command("get_keyframes", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting keyframes: {str(e)}")
+        return f"Error getting keyframes: {str(e)}"
+
+
+@mcp.tool()
+def get_modifiers(ctx: Context, object_name: str) -> str:
+    """
+    Get the modifier stack for an object.
+
+    Parameters:
+    - object_name: Name of the object
+
+    Returns modifier names, types, visibility settings, and serialized parameters.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_modifiers", {"name": object_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting modifiers: {str(e)}")
+        return f"Error getting modifiers: {str(e)}"
+
+
+@mcp.tool()
+def get_material_info(ctx: Context, name: str) -> str:
+    """
+    Get detailed material information including node tree structure.
+
+    Parameters:
+    - name: Name of the material or object (if object, uses active material)
+
+    Returns node names/types/locations, links between nodes, and Principled BSDF parameters if present.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_material_info", {"name": name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting material info: {str(e)}")
+        return f"Error getting material info: {str(e)}"
+
+
+@mcp.tool()
+def get_constraints(ctx: Context, object_name: str) -> str:
+    """
+    Get the constraint stack for an object.
+
+    Parameters:
+    - object_name: Name of the object
+
+    Returns constraint names, types, influence, mute state, targets, and serialized parameters.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_constraints", {"name": object_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting constraints: {str(e)}")
+        return f"Error getting constraints: {str(e)}"
+
+
+@mcp.tool()
+def create_light(
+    ctx: Context,
+    light_type: str = "POINT",
+    name: str = "Light",
+    location: list = None,
+    rotation: list = None,
+    energy: float = 1000.0,
+    color: list = None,
+    size: float = 0.25,
+    spot_angle: float = 45.0,
+    shadow: bool = True
+) -> str:
+    """
+    Create a new light in the scene.
+
+    Parameters:
+    - light_type: Type of light (POINT, SUN, SPOT, AREA)
+    - name: Name for the light object
+    - location: [x, y, z] position (default: [0, 0, 3])
+    - rotation: [x, y, z] rotation in radians
+    - energy: Light power/energy
+    - color: [r, g, b] color values 0-1
+    - size: Shadow soft size
+    - spot_angle: Spot cone angle in degrees (SPOT only)
+    - shadow: Enable shadows
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"light_type": light_type, "name": name, "energy": energy, "size": size, "spot_angle": spot_angle, "shadow": shadow}
+        if location: params["location"] = location
+        if rotation: params["rotation"] = rotation
+        if color: params["color"] = color
+        result = blender.send_command("create_light", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating light: {str(e)}"
+
+
+@mcp.tool()
+def set_light_property(
+    ctx: Context,
+    light_name: str,
+    energy: float = None,
+    color: list = None,
+    size: float = None,
+    shadow: bool = None,
+    location: list = None,
+    rotation: list = None
+) -> str:
+    """
+    Set properties on an existing light.
+
+    Parameters:
+    - light_name: Name of the light object
+    - energy: Light power/energy
+    - color: [r, g, b] color values
+    - size: Shadow soft size
+    - shadow: Enable/disable shadows
+    - location: [x, y, z] position
+    - rotation: [x, y, z] rotation in radians
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"light_name": light_name}
+        if energy is not None: params["energy"] = energy
+        if color is not None: params["color"] = color
+        if size is not None: params["size"] = size
+        if shadow is not None: params["shadow"] = shadow
+        if location is not None: params["location"] = location
+        if rotation is not None: params["rotation"] = rotation
+        result = blender.send_command("set_light_property", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting light property: {str(e)}"
+
+
+@mcp.tool()
+def create_camera(
+    ctx: Context,
+    name: str = "Camera",
+    location: list = None,
+    rotation: list = None,
+    focal_length: float = 50.0,
+    sensor_width: float = 36.0,
+    set_active: bool = True
+) -> str:
+    """
+    Create a new camera in the scene.
+
+    Parameters:
+    - name: Name for the camera
+    - location: [x, y, z] position
+    - rotation: [x, y, z] rotation in radians
+    - focal_length: Lens focal length in mm
+    - sensor_width: Sensor width in mm
+    - set_active: Set as the active scene camera
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": name, "focal_length": focal_length, "sensor_width": sensor_width, "set_active": set_active}
+        if location: params["location"] = location
+        if rotation: params["rotation"] = rotation
+        result = blender.send_command("create_camera", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating camera: {str(e)}"
+
+
+@mcp.tool()
+def set_camera_property(
+    ctx: Context,
+    camera_name: str,
+    focal_length: float = None,
+    clip_start: float = None,
+    clip_end: float = None,
+    dof_enabled: bool = None,
+    dof_focus_distance: float = None,
+    dof_aperture_fstop: float = None,
+    location: list = None,
+    rotation: list = None
+) -> str:
+    """
+    Set properties on an existing camera.
+
+    Parameters:
+    - camera_name: Name of the camera object
+    - focal_length: Lens focal length in mm
+    - clip_start: Near clipping distance
+    - clip_end: Far clipping distance
+    - dof_enabled: Enable/disable depth of field
+    - dof_focus_distance: DOF focus distance
+    - dof_aperture_fstop: DOF aperture f-stop
+    - location: [x, y, z] position
+    - rotation: [x, y, z] rotation in radians
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"camera_name": camera_name}
+        for key, val in [("focal_length", focal_length), ("clip_start", clip_start), ("clip_end", clip_end),
+                         ("dof_enabled", dof_enabled), ("dof_focus_distance", dof_focus_distance),
+                         ("dof_aperture_fstop", dof_aperture_fstop), ("location", location), ("rotation", rotation)]:
+            if val is not None:
+                params[key] = val
+        result = blender.send_command("set_camera_property", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting camera property: {str(e)}"
+
+
+@mcp.tool()
+def set_active_camera(ctx: Context, camera_name: str) -> str:
+    """
+    Set the active camera for the scene.
+
+    Parameters:
+    - camera_name: Name of the camera object to make active
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_active_camera", {"camera_name": camera_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting active camera: {str(e)}"
+
+
+@mcp.tool()
+def create_collection(ctx: Context, name: str, parent_name: str = None) -> str:
+    """
+    Create a new collection in the scene.
+
+    Parameters:
+    - name: Name for the new collection
+    - parent_name: Optional parent collection name (uses scene collection if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": name}
+        if parent_name: params["parent_name"] = parent_name
+        result = blender.send_command("create_collection", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating collection: {str(e)}"
+
+
+@mcp.tool()
+def delete_collection(ctx: Context, collection_name: str, delete_objects: bool = False) -> str:
+    """
+    Delete a collection.
+
+    Parameters:
+    - collection_name: Name of the collection to delete
+    - delete_objects: If True, also delete all objects in the collection
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("delete_collection", {"collection_name": collection_name, "delete_objects": delete_objects})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error deleting collection: {str(e)}"
+
+
+@mcp.tool()
+def move_to_collection(ctx: Context, object_name: str, collection_name: str, unlink_from_current: bool = True) -> str:
+    """
+    Move an object to a different collection.
+
+    Parameters:
+    - object_name: Name of the object to move
+    - collection_name: Target collection name
+    - unlink_from_current: Remove from current collections first (default: True)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("move_to_collection", {
+            "object_name": object_name, "collection_name": collection_name, "unlink_from_current": unlink_from_current
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error moving to collection: {str(e)}"
+
+
+@mcp.tool()
+def set_collection_visibility(ctx: Context, collection_name: str, hide_viewport: bool = None, hide_render: bool = None) -> str:
+    """
+    Set visibility for a collection.
+
+    Parameters:
+    - collection_name: Name of the collection
+    - hide_viewport: Hide in viewport
+    - hide_render: Hide in render
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"collection_name": collection_name}
+        if hide_viewport is not None: params["hide_viewport"] = hide_viewport
+        if hide_render is not None: params["hide_render"] = hide_render
+        result = blender.send_command("set_collection_visibility", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting collection visibility: {str(e)}"
+
+
+@mcp.tool()
+def create_material(
+    ctx: Context,
+    name: str,
+    object_name: str = None,
+    base_color: list = None,
+    roughness: float = 0.5,
+    metallic: float = 0.0
+) -> str:
+    """
+    Create a new PBR material with Principled BSDF.
+
+    Parameters:
+    - name: Material name
+    - object_name: Optional object to assign the material to
+    - base_color: [r, g, b] or [r, g, b, a] base color (0-1)
+    - roughness: Surface roughness (0-1)
+    - metallic: Metallic value (0-1)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": name, "roughness": roughness, "metallic": metallic}
+        if object_name: params["object_name"] = object_name
+        if base_color: params["base_color"] = base_color
+        result = blender.send_command("create_material", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error creating material: {str(e)}"
+
+
+@mcp.tool()
+def assign_material(ctx: Context, object_name: str, material_name: str, slot_index: int = None) -> str:
+    """
+    Assign an existing material to an object.
+
+    Parameters:
+    - object_name: Name of the target object
+    - material_name: Name of the material to assign
+    - slot_index: Optional material slot index to replace (appends if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "material_name": material_name}
+        if slot_index is not None: params["slot_index"] = slot_index
+        result = blender.send_command("assign_material", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error assigning material: {str(e)}"
+
+
+@mcp.tool()
+def set_material_property(ctx: Context, material_name: str, property_name: str, value) -> str:
+    """
+    Set a Principled BSDF property on a material.
+
+    Parameters:
+    - material_name: Name of the material
+    - property_name: Name of the BSDF input (e.g. "Base Color", "Roughness", "Metallic", "IOR")
+    - value: The value to set (float for scalar, [r,g,b,a] for colors)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_material_property", {
+            "material_name": material_name, "property_name": property_name, "value": value
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting material property: {str(e)}"
+
+
+@mcp.tool()
+def set_frame_range(ctx: Context, start_frame: int = None, end_frame: int = None, current_frame: int = None, fps: int = None) -> str:
+    """
+    Set the animation frame range, current frame, and FPS.
+
+    Parameters:
+    - start_frame: Animation start frame
+    - end_frame: Animation end frame
+    - current_frame: Jump to this frame
+    - fps: Frames per second
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        if start_frame is not None: params["start_frame"] = start_frame
+        if end_frame is not None: params["end_frame"] = end_frame
+        if current_frame is not None: params["current_frame"] = current_frame
+        if fps is not None: params["fps"] = fps
+        result = blender.send_command("set_frame_range", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting frame range: {str(e)}"
+
+
+@mcp.tool()
+def insert_keyframe(ctx: Context, object_name: str, property_path: str, frame: int, value=None, index: int = -1) -> str:
+    """
+    Insert a keyframe on an object property.
+
+    Parameters:
+    - object_name: Name of the object
+    - property_path: Property to keyframe (e.g. "location", "rotation_euler", "scale")
+    - frame: Frame number to insert the keyframe at
+    - value: Optional value to set before keying (float or [x,y,z] list)
+    - index: Array index (-1 for all)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "property_path": property_path, "frame": frame, "index": index}
+        if value is not None: params["value"] = value
+        result = blender.send_command("insert_keyframe", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error inserting keyframe: {str(e)}"
+
+
+@mcp.tool()
+def delete_keyframe(ctx: Context, object_name: str, property_path: str, frame: int, index: int = -1) -> str:
+    """
+    Delete a keyframe from an object property.
+
+    Parameters:
+    - object_name: Name of the object
+    - property_path: Property path (e.g. "location", "rotation_euler")
+    - frame: Frame number of the keyframe to delete
+    - index: Array index (-1 for all)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("delete_keyframe", {
+            "object_name": object_name, "property_path": property_path, "frame": frame, "index": index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error deleting keyframe: {str(e)}"
+
+
+@mcp.tool()
+def add_modifier(ctx: Context, object_name: str, modifier_type: str, name: str = None, params: str = None) -> str:
+    """
+    Add a modifier to an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_type: Blender modifier type (e.g. SUBSURF, BOOLEAN, ARRAY, MIRROR, SOLIDIFY)
+    - name: Optional name for the modifier
+    - params: Optional JSON string of modifier parameters (e.g. '{"levels": 2}')
+    """
+    try:
+        blender = get_blender_connection()
+        cmd_params = {"object_name": object_name, "modifier_type": modifier_type}
+        if name: cmd_params["name"] = name
+        if params: cmd_params["params"] = params
+        result = blender.send_command("add_modifier", cmd_params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error adding modifier: {str(e)}"
+
+
+@mcp.tool()
+def remove_modifier(ctx: Context, object_name: str, modifier_name: str) -> str:
+    """
+    Remove a modifier from an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_name: Name of the modifier to remove
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("remove_modifier", {"object_name": object_name, "modifier_name": modifier_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error removing modifier: {str(e)}"
+
+
+@mcp.tool()
+def set_modifier_params(ctx: Context, object_name: str, modifier_name: str, params: str) -> str:
+    """
+    Set parameters on an existing modifier.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_name: Name of the modifier
+    - params: JSON string of parameters to set (e.g. '{"levels": 3, "render_levels": 4}')
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_modifier_params", {
+            "object_name": object_name, "modifier_name": modifier_name, "params": params
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting modifier params: {str(e)}"
+
+
+@mcp.tool()
+def apply_modifier(ctx: Context, object_name: str, modifier_name: str) -> str:
+    """
+    Apply a modifier, baking it into the mesh.
+
+    Parameters:
+    - object_name: Name of the object
+    - modifier_name: Name of the modifier to apply
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("apply_modifier", {"object_name": object_name, "modifier_name": modifier_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error applying modifier: {str(e)}"
+
+
+@mcp.tool()
+def add_constraint(ctx: Context, object_name: str, constraint_type: str, name: str = None, target: str = None, params: str = None) -> str:
+    """
+    Add a constraint to an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - constraint_type: Blender constraint type (e.g. TRACK_TO, COPY_LOCATION, CHILD_OF, LIMIT_ROTATION)
+    - name: Optional name for the constraint
+    - target: Optional target object name
+    - params: Optional JSON string of constraint parameters
+    """
+    try:
+        blender = get_blender_connection()
+        cmd_params = {"object_name": object_name, "constraint_type": constraint_type}
+        if name: cmd_params["name"] = name
+        if target: cmd_params["target"] = target
+        if params: cmd_params["params"] = params
+        result = blender.send_command("add_constraint", cmd_params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error adding constraint: {str(e)}"
+
+
+@mcp.tool()
+def remove_constraint(ctx: Context, object_name: str, constraint_name: str) -> str:
+    """
+    Remove a constraint from an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - constraint_name: Name of the constraint to remove
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("remove_constraint", {"object_name": object_name, "constraint_name": constraint_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error removing constraint: {str(e)}"
+
+
+@mcp.tool()
+def set_constraint_params(ctx: Context, object_name: str, constraint_name: str, params: str) -> str:
+    """
+    Set parameters on an existing constraint.
+
+    Parameters:
+    - object_name: Name of the object
+    - constraint_name: Name of the constraint
+    - params: JSON string of parameters to set
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_constraint_params", {
+            "object_name": object_name, "constraint_name": constraint_name, "params": params
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting constraint params: {str(e)}"
+
+
+@mcp.tool()
+def uv_unwrap(ctx: Context, object_name: str, method: str = "SMART_PROJECT", angle_limit: float = 66.0, island_margin: float = 0.001, uv_layer_name: str = None) -> str:
+    """
+    UV unwrap a mesh object.
+
+    Parameters:
+    - object_name: Name of the mesh object
+    - method: Unwrap method (SMART_PROJECT, CUBE_PROJECT, CYLINDER_PROJECT, SPHERE_PROJECT, UNWRAP)
+    - angle_limit: Angle limit in degrees for smart project (default: 66)
+    - island_margin: Margin between UV islands (default: 0.001)
+    - uv_layer_name: Optional UV layer name (creates if doesn't exist)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "method": method, "angle_limit": angle_limit, "island_margin": island_margin}
+        if uv_layer_name: params["uv_layer_name"] = uv_layer_name
+        result = blender.send_command("uv_unwrap", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error UV unwrapping: {str(e)}"
+
+
+@mcp.tool()
+def set_vertex_group(ctx: Context, object_name: str, group_name: str, vertex_indices: list, weight: float = 1.0, action: str = "REPLACE") -> str:
+    """
+    Create or modify a vertex group on a mesh object.
+
+    Parameters:
+    - object_name: Name of the mesh object
+    - group_name: Vertex group name (created if doesn't exist)
+    - vertex_indices: List of vertex indices to add/modify
+    - weight: Weight value 0-1 (default: 1.0)
+    - action: REPLACE, ADD, SUBTRACT, or REMOVE (default: REPLACE)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("set_vertex_group", {
+            "object_name": object_name, "group_name": group_name,
+            "vertex_indices": vertex_indices, "weight": weight, "action": action
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting vertex group: {str(e)}"
+
+
+@mcp.tool()
+def set_render_settings(
+    ctx: Context,
+    engine: str = None,
+    resolution_x: int = None,
+    resolution_y: int = None,
+    samples: int = None,
+    denoising: bool = None,
+    output_format: str = None,
+    film_transparent: bool = None
+) -> str:
+    """
+    Configure render settings.
+
+    Parameters:
+    - engine: Render engine (CYCLES, BLENDER_EEVEE, BLENDER_EEVEE_NEXT, BLENDER_WORKBENCH)
+    - resolution_x: Horizontal resolution in pixels
+    - resolution_y: Vertical resolution in pixels
+    - samples: Render samples (engine-aware)
+    - denoising: Enable denoising (Cycles only)
+    - output_format: Output file format (PNG, JPEG, OPEN_EXR, etc.)
+    - film_transparent: Transparent film background
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        for key, val in [("engine", engine), ("resolution_x", resolution_x), ("resolution_y", resolution_y),
+                         ("samples", samples), ("denoising", denoising), ("output_format", output_format),
+                         ("film_transparent", film_transparent)]:
+            if val is not None:
+                params[key] = val
+        result = blender.send_command("set_render_settings", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting render settings: {str(e)}"
+
+
+@mcp.tool()
+def render_image(ctx: Context, animation: bool = False) -> Image | str:
+    """
+    Render the current scene. Returns an Image for single frames or a status string for animations.
+
+    Parameters:
+    - animation: If True, render the full animation sequence instead of a single frame
+    """
+    try:
+        blender = get_blender_connection()
+        if animation:
+            result = blender.send_command("render_image", {"animation": True})
+            return f"Animation rendered to: {result.get('filepath', 'default output path')}"
+        else:
+            temp_path = os.path.join(tempfile.gettempdir(), f"blender_render_{os.getpid()}.png")
+            result = blender.send_command("render_image", {"animation": False, "filepath": temp_path})
+
+            if result.get("rendered") and os.path.exists(temp_path):
+                with open(temp_path, 'rb') as f:
+                    image_bytes = f.read()
+                os.remove(temp_path)
+                return Image(data=image_bytes, format="png")
+            else:
+                return f"Render result: {json.dumps(result)}"
+    except Exception as e:
+        return f"Error rendering: {str(e)}"
+
+
+@mcp.tool()
+def frame_selected(ctx: Context, camera_name: str = None, object_names: list = None) -> str:
+    """
+    Position camera to frame selected/specified objects.
+
+    Parameters:
+    - camera_name: Optional camera name (uses active camera if omitted)
+    - object_names: Optional list of object names to frame (uses selection if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        if camera_name: params["camera_name"] = camera_name
+        if object_names: params["object_names"] = object_names
+        result = blender.send_command("frame_selected", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error framing objects: {str(e)}"
+
+
+@mcp.tool()
+def reload_addon(ctx: Context) -> str:
+    """
+    Reload the Blender addon from disk. Use after modifying addon.py.
+    The connection will drop during reload and automatically reconnect on the next tool call.
+    """
+    global _blender_connection
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("reload_addon")
+        _blender_connection = None  # Invalidate — connection will die during reload
+        source = result.get("source", "unknown")
+        return f"Addon reload triggered from {source}. Connection will reconnect automatically on next tool call."
+    except Exception as e:
+        logger.error(f"Error triggering addon reload: {e}")
+        return f"Error triggering addon reload: {e}"
+
+@mcp.tool()
+def install_addon(ctx: Context, addon_path: str = None) -> str:
+    """
+    Install or update the Blender addon from a file path.
+    Only works when the addon is already running (update use case).
+    The connection will drop during install and automatically reconnect on the next tool call.
+
+    Parameters:
+    - addon_path: Absolute path to the addon .py file to install
+    """
+    global _blender_connection
+    try:
+        if not addon_path:
+            addon_path = str(Path(__file__).parent.parent.parent / "addon.py")
+
+        blender = get_blender_connection()
+        result = blender.send_command("install_addon", {"addon_path": addon_path})
+        _blender_connection = None
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return f"Addon install triggered from {result.get('source', addon_path)}. Connection will reconnect automatically."
+    except Exception as e:
+        logger.error(f"Error triggering addon install: {e}")
+        return f"Error triggering addon install: {e}"
 
 @telemetry_tool("get_polyhaven_categories")
 @mcp.tool()
@@ -357,18 +1166,16 @@ def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
     """
     try:
         blender = get_blender_connection()
-        if not _polyhaven_enabled:
+        status = blender.send_command("get_polyhaven_status")
+        if not status.get("enabled", False):
             return "PolyHaven integration is disabled. Select it in the sidebar in BlenderMCP, then run it again."
         result = blender.send_command("get_polyhaven_categories", {"asset_type": asset_type})
         
         if "error" in result:
             return f"Error: {result['error']}"
-        
-        # Format the categories in a more readable way
+
         categories = result["categories"]
         formatted_output = f"Categories for {asset_type}:\n\n"
-        
-        # Sort categories by count (descending)
         sorted_categories = sorted(categories.items(), key=lambda x: x[1], reverse=True)
         
         for category, count in sorted_categories:
@@ -384,46 +1191,55 @@ def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
 def search_polyhaven_assets(
     ctx: Context,
     asset_type: str = "all",
-    categories: str = None
+    categories: str = None,
+    offset: int = 0,
+    limit: int = 20
 ) -> str:
     """
     Search for assets on Polyhaven with optional filtering.
-    
+
     Parameters:
     - asset_type: Type of assets to search for (hdris, textures, models, all)
     - categories: Optional comma-separated list of categories to filter by
-    
+    - offset: Starting index for pagination (default: 0)
+    - limit: Maximum number of results to return (default: 20)
+
     Returns a list of matching assets with basic information.
     """
     try:
         blender = get_blender_connection()
         result = blender.send_command("search_polyhaven_assets", {
             "asset_type": asset_type,
-            "categories": categories
+            "categories": categories,
+            "offset": offset,
+            "limit": limit
         })
-        
+
         if "error" in result:
             return f"Error: {result['error']}"
-        
-        # Format the assets in a more readable way
+
         assets = result["assets"]
         total_count = result["total_count"]
         returned_count = result["returned_count"]
-        
+        result_offset = result.get("offset", 0)
+        has_more = result.get("has_more", False)
+
         formatted_output = f"Found {total_count} assets"
         if categories:
             formatted_output += f" in categories: {categories}"
-        formatted_output += f"\nShowing {returned_count} assets:\n\n"
-        
-        # Sort assets by download count (popularity)
+        formatted_output += f"\nShowing {returned_count} assets (offset: {result_offset})"
+        if has_more:
+            formatted_output += f" — more available with offset={result_offset + returned_count}"
+        formatted_output += ":\n\n"
+
         sorted_assets = sorted(assets.items(), key=lambda x: x[1].get("download_count", 0), reverse=True)
-        
+
         for asset_id, asset_data in sorted_assets:
             formatted_output += f"- {asset_data.get('name', asset_id)} (ID: {asset_id})\n"
             formatted_output += f"  Type: {['HDRI', 'Texture', 'Model'][asset_data.get('type', 0)]}\n"
             formatted_output += f"  Categories: {', '.join(asset_data.get('categories', []))}\n"
             formatted_output += f"  Downloads: {asset_data.get('download_count', 'Unknown')}\n\n"
-        
+
         return formatted_output
     except Exception as e:
         logger.error(f"Error searching Polyhaven assets: {str(e)}")
@@ -463,8 +1279,7 @@ def download_polyhaven_asset(
         
         if result.get("success"):
             message = result.get("message", "Asset downloaded and imported successfully")
-            
-            # Add additional information based on asset type
+
             if asset_type == "hdris":
                 return f"{message}. The HDRI has been set as the world environment."
             elif asset_type == "textures":
@@ -498,21 +1313,18 @@ def set_texture(
     Returns a message indicating success or failure.
     """
     try:
-        # Get the global connection
         blender = get_blender_connection()
         result = blender.send_command("set_texture", {
             "object_name": object_name,
             "texture_id": texture_id
         })
-        
+
         if "error" in result:
             return f"Error: {result['error']}"
-        
+
         if result.get("success"):
             material_name = result.get("material", "")
             maps = ", ".join(result.get("maps", []))
-            
-            # Add detailed material info
             material_info = result.get("material_info", {})
             node_count = material_info.get("node_count", 0)
             has_nodes = material_info.get("has_nodes", False)
@@ -634,12 +1446,10 @@ def search_sketchfab_models(
             logger.error(f"Error from Sketchfab search: {result['error']}")
             return f"Error: {result['error']}"
         
-        # Safely get results with fallbacks for None
         if result is None:
             logger.error("Received None result from Sketchfab search")
             return "Error: Received no response from Sketchfab search"
-            
-        # Format the results
+
         models = result.get("results", []) or []
         if not models:
             return f"No models found matching '{query}'"
@@ -653,23 +1463,23 @@ def search_sketchfab_models(
             model_name = model.get("name", "Unnamed model")
             model_uid = model.get("uid", "Unknown ID")
             formatted_output += f"- {model_name} (UID: {model_uid})\n"
-            
-            # Get user info with safety checks
+
             user = model.get("user") or {}
             username = user.get("username", "Unknown author") if isinstance(user, dict) else "Unknown author"
             formatted_output += f"  Author: {username}\n"
-            
-            # Get license info with safety checks
+
             license_data = model.get("license") or {}
             license_label = license_data.get("label", "Unknown") if isinstance(license_data, dict) else "Unknown"
             formatted_output += f"  License: {license_label}\n"
-            
-            # Add face count and downloadable status
+
             face_count = model.get("faceCount", "Unknown")
             is_downloadable = "Yes" if model.get("isDownloadable") else "No"
             formatted_output += f"  Face count: {face_count}\n"
             formatted_output += f"  Downloadable: {is_downloadable}\n\n"
-        
+
+        if result.get("next"):
+            formatted_output += "More results available. Use a higher count to see more.\n"
+
         return formatted_output
     except Exception as e:
         logger.error(f"Error searching Sketchfab models: {str(e)}")
@@ -703,12 +1513,10 @@ def get_sketchfab_model_preview(
         
         if "error" in result:
             raise Exception(result["error"])
-        
-        # Decode base64 image data
+
         image_data = base64.b64decode(result["image_data"])
         img_format = result.get("format", "jpeg")
-        
-        # Log model info
+
         model_name = result.get("model_name", "Unknown")
         author = result.get("author", "Unknown")
         logger.info(f"Preview retrieved for '{model_name}' by {author}")
@@ -750,7 +1558,7 @@ def download_sketchfab_model(
         
         result = blender.send_command("download_sketchfab_model", {
             "uid": uid,
-            "normalize_size": True,  # Always normalize
+            "normalize_size": True,
             "target_size": target_size
         })
         
@@ -765,21 +1573,18 @@ def download_sketchfab_model(
         if result.get("success"):
             imported_objects = result.get("imported_objects", [])
             object_names = ", ".join(imported_objects) if imported_objects else "none"
-            
+
             output = f"Successfully imported model.\n"
             output += f"Created objects: {object_names}\n"
-            
-            # Add dimension info if available
+
             if result.get("dimensions"):
                 dims = result["dimensions"]
                 output += f"Dimensions (X, Y, Z): {dims[0]:.3f} x {dims[1]:.3f} x {dims[2]:.3f} meters\n"
-            
-            # Add bounding box info if available
+
             if result.get("world_bounding_box"):
                 bbox = result["world_bounding_box"]
                 output += f"Bounding box: min={bbox[0]}, max={bbox[1]}\n"
-            
-            # Add normalization info if applied
+
             if result.get("normalized"):
                 scale = result.get("scale_applied", 1.0)
                 output += f"Size normalized: scale factor {scale:.6f} applied (target size: {target_size}m)\n"
@@ -1176,10 +1981,7 @@ def asset_creation_strategy() -> str:
     - The task specifically requires a basic material/color
     """
 
-# Main execution
-
 def main():
-    """Run the MCP server"""
     mcp.run()
 
 if __name__ == "__main__":
