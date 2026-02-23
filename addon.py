@@ -13,12 +13,21 @@ import traceback
 import os
 import shutil
 import zipfile
+import logging
+import struct
 from bpy.props import IntProperty, BoolProperty
 import io
 from datetime import datetime
 import hashlib, hmac, base64
 import os.path as osp
-from contextlib import redirect_stdout, suppress
+from contextlib import redirect_stdout, redirect_stderr, suppress
+
+logger = logging.getLogger("BlenderMCP")
+logger.setLevel(logging.DEBUG)
+if not logger.handlers:
+    _console_handler = logging.StreamHandler()
+    _console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(_console_handler)
 
 bl_info = {
     "name": "Blender MCP",
@@ -36,6 +45,40 @@ RODIN_FREE_TRIAL_KEY = "k9TcfFoEhNd9cCPP2guHAHHHkctZHIRhZDywZ1euGUXwihbYLpOjQhof
 REQ_HEADERS = requests.utils.default_headers()
 REQ_HEADERS.update({"User-Agent": "blender-mcp"})
 
+MAX_OUTPUT_SIZE = 64 * 1024  # 64KB max output from code execution
+MAX_EXEC_TIMEOUT = 120  # seconds max for code execution
+
+
+def send_message(sock, data_dict):
+    """Send a length-prefixed JSON message over a socket."""
+    payload = json.dumps(data_dict).encode('utf-8')
+    header = struct.pack('>I', len(payload))
+    sock.sendall(header + payload)
+
+
+def recv_message(sock, timeout=30.0):
+    """Receive a length-prefixed JSON message from a socket."""
+    old_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        header = b''
+        while len(header) < 4:
+            chunk = sock.recv(4 - len(header))
+            if not chunk:
+                raise ConnectionError("Connection closed while reading message header")
+            header += chunk
+        msg_len = struct.unpack('>I', header)[0]
+        data = b''
+        while len(data) < msg_len:
+            chunk = sock.recv(min(msg_len - len(data), 8192))
+            if not chunk:
+                raise ConnectionError("Connection closed while reading message body")
+            data += chunk
+        return json.loads(data.decode('utf-8'))
+    finally:
+        sock.settimeout(old_timeout)
+
+
 class BlenderMCPServer:
     def __init__(self, host='localhost', port=9876):
         self.host = host
@@ -46,32 +89,30 @@ class BlenderMCPServer:
 
     def start(self):
         if self.running:
-            print("Server is already running")
+            logger.info("Server is already running")
             return
 
         self.running = True
+        self._auth_token = bpy.context.scene.blendermcp_auth_token
 
         try:
-            # Create socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
 
-            # Start server thread
             self.server_thread = threading.Thread(target=self._server_loop)
             self.server_thread.daemon = True
             self.server_thread.start()
 
-            print(f"BlenderMCP server started on {self.host}:{self.port}")
+            logger.info(f"BlenderMCP server started on {self.host}:{self.port}")
         except Exception as e:
-            print(f"Failed to start server: {str(e)}")
+            logger.error(f"Failed to start server: {str(e)}")
             self.stop()
 
     def stop(self):
         self.running = False
 
-        # Close socket
         if self.socket:
             try:
                 self.socket.close()
@@ -79,7 +120,6 @@ class BlenderMCPServer:
                 pass
             self.socket = None
 
-        # Wait for thread to finish
         if self.server_thread:
             try:
                 if self.server_thread.is_alive():
@@ -88,21 +128,19 @@ class BlenderMCPServer:
                 pass
             self.server_thread = None
 
-        print("BlenderMCP server stopped")
+        logger.info("BlenderMCP server stopped")
 
     def _server_loop(self):
         """Main server loop in a separate thread"""
-        print("Server thread started")
+        logger.info("Server thread started")
         self.socket.settimeout(1.0)  # Timeout to allow for stopping
 
         while self.running:
             try:
-                # Accept new connection
-                try:
+                    try:
                     client, address = self.socket.accept()
-                    print(f"Connected to client: {address}")
+                    logger.info(f"Connected to client: {address}")
 
-                    # Handle client in a separate thread
                     client_thread = threading.Thread(
                         target=self._handle_client,
                         args=(client,)
@@ -113,38 +151,50 @@ class BlenderMCPServer:
                     # Just check running condition
                     continue
                 except Exception as e:
-                    print(f"Error accepting connection: {str(e)}")
+                    logger.error(f"Error accepting connection: {str(e)}")
                     time.sleep(0.5)
             except Exception as e:
-                print(f"Error in server loop: {str(e)}")
+                logger.error(f"Error in server loop: {str(e)}")
                 if not self.running:
                     break
                 time.sleep(0.5)
 
-        print("Server thread stopped")
+        logger.info("Server thread stopped")
 
     def _handle_client(self, client):
         """Handle connected client"""
-        print("Client handler started")
+        logger.info("Client handler started")
         client.settimeout(None)  # No timeout
+        self._client_socket = client
         buffer = b''
+
+        # Socket authentication check
+        if self._auth_token:
+            try:
+                auth_msg = recv_message(client, timeout=10.0)
+                if auth_msg.get("type") != "auth" or auth_msg.get("token") != self._auth_token:
+                    send_message(client, {"status": "error", "message": "Authentication failed"})
+                    logger.warning(f"Authentication failed from {client.getpeername()}")
+                    return
+                send_message(client, {"status": "success", "result": {"authenticated": True}})
+                logger.info("Client authenticated successfully")
+            except Exception as e:
+                logger.warning(f"Auth handshake failed: {e}")
+                return
 
         try:
             while self.running:
-                # Receive data
                 try:
                     data = client.recv(8192)
                     if not data:
-                        print("Client disconnected")
+                        logger.info("Client disconnected")
                         break
 
                     buffer += data
                     try:
-                        # Try to parse command
                         command = json.loads(buffer.decode('utf-8'))
                         buffer = b''
 
-                        # Execute command in Blender's main thread
                         def execute_wrapper():
                             try:
                                 response = self.execute_command(command)
@@ -152,7 +202,7 @@ class BlenderMCPServer:
                                 try:
                                     client.sendall(response_json.encode('utf-8'))
                                 except:
-                                    print("Failed to send response - client disconnected")
+                                    logger.warning("Failed to send response - client disconnected")
                             except Exception as e:
                                 print(f"Error executing command: {str(e)}")
                                 traceback.print_exc()
@@ -166,22 +216,27 @@ class BlenderMCPServer:
                                     pass
                             return None
 
-                        # Schedule execution in main thread
                         bpy.app.timers.register(execute_wrapper, first_interval=0.0)
                     except json.JSONDecodeError:
-                        # Incomplete data, wait for more
                         pass
                 except Exception as e:
-                    print(f"Error receiving data: {str(e)}")
+                    logger.error(f"Error receiving data: {str(e)}")
                     break
         except Exception as e:
-            print(f"Error in client handler: {str(e)}")
+            logger.error(f"Error in client handler: {str(e)}")
         finally:
             try:
                 client.close()
             except:
                 pass
-            print("Client handler stopped")
+            logger.info("Client handler stopped")
+
+    def _set_operation_status(self, status):
+        """Update the UI status label for long-running operations."""
+        def _update(s=status):
+            bpy.context.scene.blendermcp_current_operation = s
+            return None
+        bpy.app.timers.register(_update, first_interval=0.0)
 
     def execute_command(self, command):
         """Execute a command in the main Blender thread"""
@@ -213,6 +268,7 @@ class BlenderMCPServer:
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
             "get_hunyuan3d_status": self.get_hunyuan3d_status,
+            "auth": lambda **kw: {"authenticated": True},
         }
 
         # Add Polyhaven handlers only if enabled
@@ -255,12 +311,14 @@ class BlenderMCPServer:
         handler = handlers.get(cmd_type)
         if handler:
             try:
-                print(f"Executing handler for {cmd_type}")
+                start_time = time.time()
+                logger.info(f"Executing handler for {cmd_type}")
                 result = handler(**params)
-                print(f"Handler execution complete")
+                duration = time.time() - start_time
+                logger.info(f"Handler {cmd_type} completed in {duration:.3f}s")
                 return {"status": "success", "result": result}
             except Exception as e:
-                print(f"Error in handler: {str(e)}")
+                logger.error(f"Error in {cmd_type} handler: {str(e)}")
                 traceback.print_exc()
                 return {"status": "error", "message": str(e)}
         else:
@@ -271,7 +329,7 @@ class BlenderMCPServer:
     def get_scene_info(self):
         """Get information about the current Blender scene"""
         try:
-            print("Getting scene info...")
+            logger.info("Getting scene info...")
             # Simplify the scene info to reduce data size
             scene_info = {
                 "name": bpy.context.scene.name,
@@ -295,10 +353,10 @@ class BlenderMCPServer:
                 }
                 scene_info["objects"].append(obj_info)
 
-            print(f"Scene info collected: {len(scene_info['objects'])} objects")
+            logger.info(f"Scene info collected: {len(scene_info['objects'])} objects")
             return scene_info
         except Exception as e:
-            print(f"Error in get_scene_info: {str(e)}")
+            logger.error(f"Error in get_scene_info: {str(e)}")
             traceback.print_exc()
             return {"error": str(e)}
 
@@ -2596,7 +2654,19 @@ def register():
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
     bpy.utils.register_class(BLENDERMCP_OT_OpenTerms)
 
-    print("BlenderMCP addon registered")
+    bpy.types.Scene.blendermcp_current_operation = bpy.props.StringProperty(
+        name="Current Operation",
+        default=""
+    )
+
+    bpy.types.Scene.blendermcp_auth_token = bpy.props.StringProperty(
+        name="Auth Token",
+        subtype="PASSWORD",
+        description="Optional authentication token for socket connections",
+        default=""
+    )
+
+    logger.info("BlenderMCP addon registered")
 
 def unregister():
     # Stop the server if it's running
@@ -2629,7 +2699,15 @@ def unregister():
     del bpy.types.Scene.blendermcp_hunyuan3d_guidance_scale
     del bpy.types.Scene.blendermcp_hunyuan3d_texture
 
-    print("BlenderMCP addon unregistered")
+    for h in logger.handlers[:]:
+        if getattr(h, 'name', '') == 'blendermcp_file':
+            logger.removeHandler(h)
+            h.close()
+
+    del bpy.types.Scene.blendermcp_current_operation
+    del bpy.types.Scene.blendermcp_auth_token
+
+    logger.info("BlenderMCP addon unregistered")
 
 if __name__ == "__main__":
     register()
