@@ -296,7 +296,10 @@ class BlenderMCPServer:
             "set_keyframe_interpolation": self.set_keyframe_interpolation,
             "create_shader_node": self.create_shader_node,
             "connect_shader_nodes": self.connect_shader_nodes,
+            "blender_undo": self.blender_undo,
+            "blender_redo": self.blender_redo,
             "select_objects": self.select_objects,
+            "export_scene": self.export_scene,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
@@ -1753,6 +1756,16 @@ class BlenderMCPServer:
             "link": {"from": f"{from_node}.{from_socket}", "to": f"{to_node}.{to_socket}"},
         }
 
+    def blender_undo(self, steps=1):
+        for _ in range(steps):
+            bpy.ops.ed.undo()
+        return {"action": "undo", "steps": steps}
+
+    def blender_redo(self, steps=1):
+        for _ in range(steps):
+            bpy.ops.ed.redo()
+        return {"action": "redo", "steps": steps}
+
     def select_objects(self, names=None, type=None, material=None, deselect_first=True, active=None):
         if deselect_first:
             bpy.ops.object.select_all(action='DESELECT')
@@ -1787,6 +1800,23 @@ class BlenderMCPServer:
             "active": active_obj.name if active_obj else None,
             "count": len(selected),
         }
+
+    def export_scene(self, filepath, format="GLTF", selected_only=False):
+        filepath = os.path.expanduser(filepath)
+        parent_dir = os.path.dirname(filepath)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        if format in ("GLTF", "GLB"):
+            bpy.ops.export_scene.gltf(filepath=filepath, export_format=format, use_selection=selected_only)
+        elif format == "FBX":
+            bpy.ops.export_scene.fbx(filepath=filepath, use_selection=selected_only)
+        elif format == "OBJ":
+            bpy.ops.wm.obj_export(filepath=filepath, export_selected_objects=selected_only)
+        elif format == "STL":
+            bpy.ops.wm.stl_export(filepath=filepath, export_selected_objects=selected_only)
+        else:
+            raise ValueError(f"Unsupported format: {format}. Must be GLTF, GLB, FBX, OBJ, or STL")
+        return {"filepath": filepath, "format": format, "selected_only": selected_only}
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""

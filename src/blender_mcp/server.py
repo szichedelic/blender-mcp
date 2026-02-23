@@ -1386,6 +1386,38 @@ def connect_shader_nodes(
 
 
 @mcp.tool()
+def blender_undo(ctx: Context, steps: int = 1) -> str:
+    """
+    Undo the last operation(s) in Blender.
+
+    Parameters:
+    - steps: Number of undo steps (default: 1)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("blender_undo", {"steps": steps})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error performing undo: {str(e)}"
+
+
+@mcp.tool()
+def blender_redo(ctx: Context, steps: int = 1) -> str:
+    """
+    Redo the last undone operation(s) in Blender.
+
+    Parameters:
+    - steps: Number of redo steps (default: 1)
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("blender_redo", {"steps": steps})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error performing redo: {str(e)}"
+
+
+@mcp.tool()
 def select_objects(
     ctx: Context,
     names: list = None,
@@ -1415,6 +1447,26 @@ def select_objects(
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error selecting objects: {str(e)}"
+
+
+@mcp.tool()
+def export_scene(ctx: Context, filepath: str, format: str = "GLTF", selected_only: bool = False) -> str:
+    """
+    Export the scene to a file.
+
+    Parameters:
+    - filepath: Output file path
+    - format: Export format - GLTF, GLB, FBX, OBJ, or STL (default: GLTF)
+    - selected_only: If True, only export selected objects
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("export_scene", {
+            "filepath": filepath, "format": format, "selected_only": selected_only,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error exporting scene: {str(e)}"
 
 
 @mcp.tool()
