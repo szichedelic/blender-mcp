@@ -1277,6 +1277,53 @@ def separate_object(ctx: Context, object_name: str, mode: str = "SELECTED") -> s
 
 
 @mcp.tool()
+def set_playback(ctx: Context, action: str, frame: int = None) -> str:
+    """
+    Control animation playback.
+
+    Parameters:
+    - action: One of "play", "stop", "pause", "jump"
+    - frame: Frame number (required for "jump" action)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"action": action}
+        if frame is not None: params["frame"] = frame
+        result = blender.send_command("set_playback", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error controlling playback: {str(e)}"
+
+
+@mcp.tool()
+def set_keyframe_interpolation(
+    ctx: Context,
+    object_name: str,
+    interpolation: str,
+    property_path: str = None,
+    frame: int = None
+) -> str:
+    """
+    Set the interpolation type for keyframes on an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - interpolation: Interpolation type - BEZIER, LINEAR, or CONSTANT
+    - property_path: Optional filter by property path (e.g. "location", "rotation_euler")
+    - frame: Optional specific frame number to modify (modifies all frames if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "interpolation": interpolation}
+        if property_path is not None: params["property_path"] = property_path
+        if frame is not None: params["frame"] = frame
+        result = blender.send_command("set_keyframe_interpolation", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting keyframe interpolation: {str(e)}"
+
+
+@mcp.tool()
 def select_objects(
     ctx: Context,
     names: list = None,

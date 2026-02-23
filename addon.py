@@ -292,6 +292,8 @@ class BlenderMCPServer:
             "set_parent": self.set_parent,
             "join_objects": self.join_objects,
             "separate_object": self.separate_object,
+            "set_playback": self.set_playback,
+            "set_keyframe_interpolation": self.set_keyframe_interpolation,
             "select_objects": self.select_objects,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
@@ -1655,6 +1657,40 @@ class BlenderMCPServer:
         bpy.ops.object.mode_set(mode='OBJECT')
         result_names = [o.name for o in bpy.context.selected_objects]
         return {"objects": result_names, "count": len(result_names)}
+
+    def set_playback(self, action, frame=None):
+        if action == "play":
+            bpy.ops.screen.animation_play()
+        elif action in ("stop", "pause"):
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+        elif action == "jump":
+            if frame is None:
+                raise ValueError("Frame number is required for 'jump' action")
+            bpy.context.scene.frame_set(frame)
+        else:
+            raise ValueError(f"Invalid action: {action}. Must be play, stop, pause, or jump")
+        return {"action": action, "frame": bpy.context.scene.frame_current}
+
+    def set_keyframe_interpolation(self, object_name, interpolation, property_path=None, frame=None):
+        valid_types = ('BEZIER', 'LINEAR', 'CONSTANT')
+        if interpolation not in valid_types:
+            raise ValueError(f"Invalid interpolation: {interpolation}. Must be one of {valid_types}")
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        if not obj.animation_data or not obj.animation_data.action:
+            raise ValueError(f"Object '{object_name}' has no animation data")
+        action = obj.animation_data.action
+        count = 0
+        for fcurve in action.fcurves:
+            if property_path and fcurve.data_path != property_path:
+                continue
+            for kp in fcurve.keyframe_points:
+                if frame is not None and int(kp.co[0]) != frame:
+                    continue
+                kp.interpolation = interpolation
+                count += 1
+        return {"object": obj.name, "interpolation": interpolation, "modified_count": count}
 
     def select_objects(self, names=None, type=None, material=None, deselect_first=True, active=None):
         if deselect_first:
