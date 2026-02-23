@@ -286,6 +286,11 @@ class BlenderMCPServer:
             "frame_selected": self.frame_selected,
             "get_viewport_screenshot": self.get_viewport_screenshot,
             "execute_code": self.execute_code,
+            "duplicate_object": self.duplicate_object,
+            "delete_object": self.delete_object,
+            "set_object_transform": self.set_object_transform,
+            "set_parent": self.set_parent,
+            "select_objects": self.select_objects,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
@@ -1517,7 +1522,130 @@ class BlenderMCPServer:
         finally:
             timer.cancel()
 
+    def duplicate_object(self, object_name, new_name=None, linked=False, location=None):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        if linked:
+            new_obj = obj.copy()
+        else:
+            new_obj = obj.copy()
+            if obj.data:
+                new_obj.data = obj.data.copy()
+        bpy.context.collection.objects.link(new_obj)
+        if new_name:
+            new_obj.name = new_name
+        if location:
+            new_obj.location = location
+        return {
+            "name": new_obj.name,
+            "original": obj.name,
+            "linked": linked,
+            "location": list(new_obj.location),
+        }
 
+    def delete_object(self, object_name, delete_data=False):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        data = obj.data
+        for col in obj.users_collection:
+            col.objects.unlink(obj)
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if delete_data and data and data.users == 0:
+            data_collections = {
+                'MESH': bpy.data.meshes,
+                'CURVE': bpy.data.curves,
+                'SURFACE': bpy.data.curves,
+                'FONT': bpy.data.curves,
+                'META': bpy.data.metaballs,
+                'ARMATURE': bpy.data.armatures,
+                'LATTICE': bpy.data.lattices,
+                'LIGHT': bpy.data.lights,
+                'CAMERA': bpy.data.cameras,
+                'SPEAKER': bpy.data.speakers,
+                'GPENCIL': bpy.data.grease_pencils,
+            }
+            obj_type = type(data).__name__
+            for dtype, collection in data_collections.items():
+                if data.name in collection:
+                    try:
+                        collection.remove(data)
+                    except:
+                        pass
+                    break
+        return {"deleted": object_name, "data_deleted": delete_data}
+
+    def set_object_transform(self, object_name, location=None, rotation=None, scale=None):
+        obj = bpy.data.objects.get(object_name)
+        if not obj:
+            raise ValueError(f"Object not found: {object_name}")
+        if location is not None:
+            obj.location = location
+        if rotation is not None:
+            obj.rotation_euler = rotation
+        if scale is not None:
+            obj.scale = scale
+        return {
+            "name": obj.name,
+            "location": list(obj.location),
+            "rotation": list(obj.rotation_euler),
+            "scale": list(obj.scale),
+        }
+
+    def set_parent(self, child_name, parent_name=None, keep_transform=True):
+        child = bpy.data.objects.get(child_name)
+        if not child:
+            raise ValueError(f"Child object not found: {child_name}")
+        if parent_name is None:
+            if keep_transform:
+                world_matrix = child.matrix_world.copy()
+            child.parent = None
+            if keep_transform:
+                child.matrix_world = world_matrix
+            return {"child": child.name, "parent": None, "keep_transform": keep_transform}
+        parent = bpy.data.objects.get(parent_name)
+        if not parent:
+            raise ValueError(f"Parent object not found: {parent_name}")
+        child.parent = parent
+        if keep_transform:
+            child.matrix_parent_inverse = parent.matrix_world.inverted()
+        return {"child": child.name, "parent": parent.name, "keep_transform": keep_transform}
+
+    def select_objects(self, names=None, type=None, material=None, deselect_first=True, active=None):
+        if deselect_first:
+            bpy.ops.object.select_all(action='DESELECT')
+        selected = []
+        if names:
+            for name in names:
+                obj = bpy.data.objects.get(name)
+                if obj:
+                    obj.select_set(True)
+                    selected.append(obj.name)
+        if type:
+            for obj in bpy.data.objects:
+                if obj.type == type:
+                    obj.select_set(True)
+                    if obj.name not in selected:
+                        selected.append(obj.name)
+        if material:
+            mat = bpy.data.materials.get(material)
+            if mat:
+                for obj in bpy.data.objects:
+                    if hasattr(obj.data, 'materials') and mat.name in [m.name for m in obj.data.materials if m]:
+                        obj.select_set(True)
+                        if obj.name not in selected:
+                            selected.append(obj.name)
+        active_obj = None
+        if active:
+            active_obj = bpy.data.objects.get(active)
+            if active_obj:
+                bpy.context.view_layer.objects.active = active_obj
+        return {
+            "selected": selected,
+            "active": active_obj.name if active_obj else None,
+            "count": len(selected),
+        }
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""

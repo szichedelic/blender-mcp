@@ -1145,6 +1145,137 @@ def install_addon(ctx: Context, addon_path: str = None) -> str:
         return f"Error triggering addon install: {e}"
 
 @mcp.tool()
+def duplicate_object(
+    ctx: Context,
+    object_name: str,
+    new_name: str = None,
+    linked: bool = False,
+    location: list = None
+) -> str:
+    """
+    Duplicate an object in the scene.
+
+    Parameters:
+    - object_name: Name of the object to duplicate
+    - new_name: Optional name for the new object
+    - linked: If True, create a linked duplicate (shares mesh data)
+    - location: Optional [x, y, z] position for the duplicate
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name, "linked": linked}
+        if new_name is not None: params["new_name"] = new_name
+        if location is not None: params["location"] = location
+        result = blender.send_command("duplicate_object", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error duplicating object: {str(e)}"
+
+
+@mcp.tool()
+def delete_object(ctx: Context, object_name: str, delete_data: bool = False) -> str:
+    """
+    Delete an object from the scene.
+
+    Parameters:
+    - object_name: Name of the object to delete
+    - delete_data: If True, also delete the object's data (mesh, curve, etc.) if it has no other users
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("delete_object", {"object_name": object_name, "delete_data": delete_data})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error deleting object: {str(e)}"
+
+
+@mcp.tool()
+def set_object_transform(
+    ctx: Context,
+    object_name: str,
+    location: list = None,
+    rotation: list = None,
+    scale: list = None
+) -> str:
+    """
+    Set the transform (location, rotation, scale) of an object.
+
+    Parameters:
+    - object_name: Name of the object
+    - location: Optional [x, y, z] position
+    - rotation: Optional [x, y, z] rotation in radians
+    - scale: Optional [x, y, z] scale
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"object_name": object_name}
+        if location is not None: params["location"] = location
+        if rotation is not None: params["rotation"] = rotation
+        if scale is not None: params["scale"] = scale
+        result = blender.send_command("set_object_transform", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting object transform: {str(e)}"
+
+
+@mcp.tool()
+def set_parent(
+    ctx: Context,
+    child_name: str,
+    parent_name: str = None,
+    keep_transform: bool = True
+) -> str:
+    """
+    Set or clear the parent of an object.
+
+    Parameters:
+    - child_name: Name of the child object
+    - parent_name: Name of the parent object (None to clear parent)
+    - keep_transform: If True, maintain the child's world transform when parenting/unparenting
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"child_name": child_name, "keep_transform": keep_transform}
+        if parent_name is not None: params["parent_name"] = parent_name
+        result = blender.send_command("set_parent", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting parent: {str(e)}"
+
+
+@mcp.tool()
+def select_objects(
+    ctx: Context,
+    names: list = None,
+    type: str = None,
+    material: str = None,
+    deselect_first: bool = True,
+    active: str = None
+) -> str:
+    """
+    Select objects in the scene by various criteria.
+
+    Parameters:
+    - names: Optional list of object names to select
+    - type: Optional object type filter (MESH, LIGHT, CAMERA, EMPTY, CURVE, etc.)
+    - material: Optional material name - select all objects using this material
+    - deselect_first: If True, deselect all objects before selecting (default: True)
+    - active: Optional object name to set as the active object
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"deselect_first": deselect_first}
+        if names is not None: params["names"] = names
+        if type is not None: params["type"] = type
+        if material is not None: params["material"] = material
+        if active is not None: params["active"] = active
+        result = blender.send_command("select_objects", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error selecting objects: {str(e)}"
+
+
+@mcp.tool()
 def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
     """
     Get a list of categories for a specific asset type on Polyhaven.
