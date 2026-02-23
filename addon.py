@@ -260,6 +260,15 @@ class BlenderMCPServer:
         handlers = {
             "get_scene_info": self.get_scene_info,
             "get_object_info": self.get_object_info,
+            "get_lights": self.get_lights,
+            "get_render_settings": self.get_render_settings,
+            "get_collections": self.get_collections,
+            "get_mesh_info": self.get_mesh_info,
+            "get_animation_info": self.get_animation_info,
+            "get_keyframes": self.get_keyframes,
+            "get_modifiers": self.get_modifiers,
+            "get_material_info": self.get_material_info,
+            "get_constraints": self.get_constraints,
             "get_viewport_screenshot": self.get_viewport_screenshot,
             "execute_code": self.execute_code,
             "get_telemetry_consent": self.get_telemetry_consent,
@@ -559,6 +568,284 @@ class BlenderMCPServer:
             }
 
         return obj_info
+
+    @staticmethod
+    def _serialize_properties(rna_obj):
+        """Extract serializable properties from any bpy_struct via bl_rna.properties."""
+        result = {}
+        for prop in rna_obj.bl_rna.properties:
+            if prop.identifier == 'rna_type':
+                continue
+            try:
+                val = getattr(rna_obj, prop.identifier)
+                if hasattr(val, 'to_list'):
+                    val = val.to_list()
+                elif hasattr(val, 'to_dict'):
+                    val = val.to_dict()
+                json.dumps(val)
+                result[prop.identifier] = val
+            except (TypeError, AttributeError, ValueError):
+                continue
+        return result
+
+    @staticmethod
+    def _get_principled_bsdf(material):
+        """Find Principled BSDF node in material node tree."""
+        if not material or not material.use_nodes or not material.node_tree:
+            return None
+        for node in material.node_tree.nodes:
+            if node.type == 'BSDF_PRINCIPLED':
+                return node
+        return None
+
+    def get_lights(self):
+        lights = []
+        for obj in bpy.context.scene.objects:
+            if obj.type == 'LIGHT' and len(lights) < 50:
+                light = obj.data
+                lights.append({
+                    "name": obj.name,
+                    "type": light.type,
+                    "energy": light.energy,
+                    "color": [light.color.r, light.color.g, light.color.b],
+                    "shadow": light.use_shadow,
+                    "location": [obj.location.x, obj.location.y, obj.location.z],
+                    "rotation": [obj.rotation_euler.x, obj.rotation_euler.y, obj.rotation_euler.z],
+                })
+        return {"lights": lights, "count": len(lights)}
+
+    def get_render_settings(self):
+        scene = bpy.context.scene
+        render = scene.render
+        result = {
+            "engine": render.engine,
+            "resolution_x": render.resolution_x,
+            "resolution_y": render.resolution_y,
+            "resolution_percentage": render.resolution_percentage,
+            "fps": scene.render.fps,
+            "frame_start": scene.frame_start,
+            "frame_end": scene.frame_end,
+            "frame_current": scene.frame_current,
+            "output_format": render.image_settings.file_format,
+            "film_transparent": render.film_transparent,
+        }
+        if render.engine == 'CYCLES':
+            result["samples"] = scene.cycles.samples
+            result["preview_samples"] = scene.cycles.preview_samples
+            result["denoising"] = scene.cycles.use_denoising
+        elif render.engine == 'BLENDER_EEVEE' or render.engine == 'BLENDER_EEVEE_NEXT':
+            result["samples"] = scene.eevee.taa_render_samples
+            result["denoising"] = False
+        camera = scene.camera
+        if camera:
+            result["active_camera"] = camera.name
+        return result
+
+    def get_collections(self):
+        def _collect(collection, depth=0):
+            if depth > 10:
+                return None
+            info = {
+                "name": collection.name,
+                "objects": [obj.name for obj in collection.objects],
+                "object_count": len(collection.objects),
+                "hide_viewport": collection.hide_viewport,
+                "hide_render": collection.hide_render,
+                "children": [],
+            }
+            for child in collection.children:
+                child_info = _collect(child, depth + 1)
+                if child_info:
+                    info["children"].append(child_info)
+            return info
+
+        root = bpy.context.scene.collection
+        return _collect(root)
+
+    def get_mesh_info(self, name):
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            raise ValueError(f"Object not found: {name}")
+        if obj.type != 'MESH':
+            raise ValueError(f"Object '{name}' is not a mesh (type: {obj.type})")
+        mesh = obj.data
+        result = {
+            "name": obj.name,
+            "vertices": len(mesh.vertices),
+            "edges": len(mesh.edges),
+            "polygons": len(mesh.polygons),
+            "uv_layers": [uv.name for uv in mesh.uv_layers],
+            "active_uv": mesh.uv_layers.active.name if mesh.uv_layers.active else None,
+            "vertex_groups": [vg.name for vg in obj.vertex_groups],
+            "shape_keys": [],
+        }
+        if mesh.shape_keys:
+            for key in mesh.shape_keys.key_blocks:
+                result["shape_keys"].append({
+                    "name": key.name,
+                    "value": key.value,
+                    "min": key.slider_min,
+                    "max": key.slider_max,
+                })
+        return result
+
+    def get_animation_info(self):
+        scene = bpy.context.scene
+        result = {
+            "frame_start": scene.frame_start,
+            "frame_end": scene.frame_end,
+            "frame_current": scene.frame_current,
+            "fps": scene.render.fps,
+            "keyframed_objects": [],
+        }
+        seen = set()
+        for obj in scene.objects:
+            if obj.animation_data and obj.animation_data.action:
+                paths = set()
+                for fcurve in obj.animation_data.action.fcurves:
+                    paths.add(fcurve.data_path)
+                if paths and obj.name not in seen:
+                    seen.add(obj.name)
+                    result["keyframed_objects"].append({
+                        "name": obj.name,
+                        "animated_properties": list(paths),
+                    })
+        return result
+
+    def get_keyframes(self, name, property_path=None):
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            raise ValueError(f"Object not found: {name}")
+        if not obj.animation_data or not obj.animation_data.action:
+            return {"name": name, "fcurves": [], "message": "No animation data"}
+
+        fcurves_data = []
+        for i, fcurve in enumerate(obj.animation_data.action.fcurves):
+            if i >= 50:
+                break
+            if property_path and fcurve.data_path != property_path:
+                continue
+            keyframes = []
+            for j, kp in enumerate(fcurve.keyframe_points):
+                if j >= 500:
+                    keyframes.append({"truncated": True, "total": len(fcurve.keyframe_points)})
+                    break
+                keyframes.append({
+                    "frame": kp.co.x,
+                    "value": kp.co.y,
+                    "interpolation": kp.interpolation,
+                })
+            fcurves_data.append({
+                "data_path": fcurve.data_path,
+                "array_index": fcurve.array_index,
+                "keyframes": keyframes,
+            })
+        return {"name": name, "fcurves": fcurves_data}
+
+    def get_modifiers(self, name):
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            raise ValueError(f"Object not found: {name}")
+        modifiers = []
+        for mod in obj.modifiers:
+            mod_info = {
+                "name": mod.name,
+                "type": mod.type,
+                "show_viewport": mod.show_viewport,
+                "show_render": mod.show_render,
+            }
+            mod_info["params"] = self._serialize_properties(mod)
+            modifiers.append(mod_info)
+        return {"name": name, "modifiers": modifiers}
+
+    def get_material_info(self, name):
+        mat = bpy.data.materials.get(name)
+        if not mat:
+            obj = bpy.data.objects.get(name)
+            if obj and obj.active_material:
+                mat = obj.active_material
+            else:
+                raise ValueError(f"Material not found: {name}")
+
+        result = {"name": mat.name, "use_nodes": mat.use_nodes}
+        if not mat.use_nodes or not mat.node_tree:
+            return result
+
+        nodes = []
+        for i, node in enumerate(mat.node_tree.nodes):
+            if i >= 50:
+                break
+            node_info = {
+                "name": node.name,
+                "type": node.type,
+                "location": [node.location.x, node.location.y],
+            }
+            inputs = []
+            for inp in node.inputs:
+                inp_data = {"name": inp.name, "type": inp.type}
+                if hasattr(inp, 'default_value'):
+                    try:
+                        val = inp.default_value
+                        if hasattr(val, 'to_list'):
+                            val = val.to_list()
+                        elif hasattr(val, '__iter__') and not isinstance(val, str):
+                            val = list(val)
+                        json.dumps(val)
+                        inp_data["default_value"] = val
+                    except (TypeError, ValueError):
+                        pass
+                inputs.append(inp_data)
+            node_info["inputs"] = inputs
+            nodes.append(node_info)
+
+        links = []
+        for link in mat.node_tree.links:
+            links.append({
+                "from_node": link.from_node.name,
+                "from_socket": link.from_socket.name,
+                "to_node": link.to_node.name,
+                "to_socket": link.to_socket.name,
+            })
+
+        result["nodes"] = nodes
+        result["links"] = links
+
+        bsdf = self._get_principled_bsdf(mat)
+        if bsdf:
+            bsdf_params = {}
+            for inp in bsdf.inputs:
+                if hasattr(inp, 'default_value'):
+                    try:
+                        val = inp.default_value
+                        if hasattr(val, 'to_list'):
+                            val = val.to_list()
+                        elif hasattr(val, '__iter__') and not isinstance(val, str):
+                            val = list(val)
+                        json.dumps(val)
+                        bsdf_params[inp.name] = val
+                    except (TypeError, ValueError):
+                        pass
+            result["principled_bsdf"] = bsdf_params
+
+        return result
+
+    def get_constraints(self, name):
+        obj = bpy.data.objects.get(name)
+        if not obj:
+            raise ValueError(f"Object not found: {name}")
+        constraints = []
+        for con in obj.constraints:
+            con_info = {
+                "name": con.name,
+                "type": con.type,
+                "influence": con.influence,
+                "mute": con.mute,
+            }
+            if hasattr(con, 'target') and con.target:
+                con_info["target"] = con.target.name
+            con_info["params"] = self._serialize_properties(con)
+            constraints.append(con_info)
+        return {"name": name, "constraints": constraints}
 
     def get_viewport_screenshot(self, max_size=800, filepath=None, format="png"):
         """

@@ -304,6 +304,168 @@ def execute_blender_code(ctx: Context, code: str, timeout: int = 30) -> str:
         logger.error(f"Error executing code: {str(e)}")
         return f"Error executing code: {str(e)}"
 
+
+@mcp.tool()
+def get_lights(ctx: Context) -> str:
+    """
+    Get a list of all lights in the scene with their properties.
+
+    Returns light names, types, energy, color, shadow settings, and transforms.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_lights")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting lights: {str(e)}")
+        return f"Error getting lights: {str(e)}"
+
+
+@mcp.tool()
+def get_render_settings(ctx: Context) -> str:
+    """
+    Get the current render settings including engine, resolution, samples, FPS, and output format.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_render_settings")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting render settings: {str(e)}")
+        return f"Error getting render settings: {str(e)}"
+
+
+@mcp.tool()
+def get_collections(ctx: Context) -> str:
+    """
+    Get the collection hierarchy of the current scene.
+
+    Returns a recursive tree of collections with their objects, visibility, and children.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_collections")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting collections: {str(e)}")
+        return f"Error getting collections: {str(e)}"
+
+
+@mcp.tool()
+def get_mesh_info(ctx: Context, object_name: str) -> str:
+    """
+    Get detailed mesh data for a mesh object.
+
+    Parameters:
+    - object_name: Name of the mesh object
+
+    Returns vertex/edge/polygon counts, UV layers, vertex groups, and shape keys.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_mesh_info", {"name": object_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting mesh info: {str(e)}")
+        return f"Error getting mesh info: {str(e)}"
+
+
+@mcp.tool()
+def get_animation_info(ctx: Context) -> str:
+    """
+    Get animation information for the current scene.
+
+    Returns frame range, FPS, current frame, and a list of keyframed objects with their animated property paths.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_animation_info")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting animation info: {str(e)}")
+        return f"Error getting animation info: {str(e)}"
+
+
+@mcp.tool()
+def get_keyframes(ctx: Context, object_name: str, property_path: str = None) -> str:
+    """
+    Get keyframe data for a specific object.
+
+    Parameters:
+    - object_name: Name of the object to read keyframes from
+    - property_path: Optional filter by property path (e.g. "location", "rotation_euler")
+
+    Returns fcurve data with frame numbers, values, and interpolation types.
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"name": object_name}
+        if property_path:
+            params["property_path"] = property_path
+        result = blender.send_command("get_keyframes", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting keyframes: {str(e)}")
+        return f"Error getting keyframes: {str(e)}"
+
+
+@mcp.tool()
+def get_modifiers(ctx: Context, object_name: str) -> str:
+    """
+    Get the modifier stack for an object.
+
+    Parameters:
+    - object_name: Name of the object
+
+    Returns modifier names, types, visibility settings, and serialized parameters.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_modifiers", {"name": object_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting modifiers: {str(e)}")
+        return f"Error getting modifiers: {str(e)}"
+
+
+@mcp.tool()
+def get_material_info(ctx: Context, name: str) -> str:
+    """
+    Get detailed material information including node tree structure.
+
+    Parameters:
+    - name: Name of the material or object (if object, uses active material)
+
+    Returns node names/types/locations, links between nodes, and Principled BSDF parameters if present.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_material_info", {"name": name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting material info: {str(e)}")
+        return f"Error getting material info: {str(e)}"
+
+
+@mcp.tool()
+def get_constraints(ctx: Context, object_name: str) -> str:
+    """
+    Get the constraint stack for an object.
+
+    Parameters:
+    - object_name: Name of the object
+
+    Returns constraint names, types, influence, mute state, targets, and serialized parameters.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_constraints", {"name": object_name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting constraints: {str(e)}")
+        return f"Error getting constraints: {str(e)}"
+
+
 @mcp.tool()
 def reload_addon(ctx: Context) -> str:
     """
