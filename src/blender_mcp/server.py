@@ -1470,6 +1470,50 @@ def export_scene(ctx: Context, filepath: str, format: str = "GLTF", selected_onl
 
 
 @mcp.tool()
+def save_scene(ctx: Context, filepath: str | None = None) -> str:
+    """
+    Save the current Blender scene to a .blend file.
+
+    Parameters:
+    - filepath: Path to save the file (e.g. "~/projects/my_scene.blend"). If omitted, saves to the current file path.
+    """
+    try:
+        blender = get_blender_connection()
+        params = {}
+        if filepath:
+            params["filepath"] = filepath
+        result = blender.send_command("save_scene", params)
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error saving scene: {str(e)}"
+
+
+@mcp.tool()
+def set_auto_save(ctx: Context, enabled: bool, interval_seconds: int = 300, filepath: str | None = None) -> str:
+    """
+    Enable or disable automatic periodic saving of the Blender scene.
+
+    Parameters:
+    - enabled: True to enable auto-save, False to disable
+    - interval_seconds: Seconds between saves (default: 300 = 5 minutes)
+    - filepath: Path to save to (uses current file path if omitted)
+    """
+    try:
+        blender = get_blender_connection()
+        params = {"enabled": enabled, "interval_seconds": interval_seconds}
+        if filepath:
+            params["filepath"] = filepath
+        result = blender.send_command("set_auto_save", params)
+        if "error" in result:
+            return f"Error: {result['error']}"
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error setting auto-save: {str(e)}"
+
+
+@mcp.tool()
 def get_polyhaven_categories(ctx: Context, asset_type: str = "hdris") -> str:
     """
     Get a list of categories for a specific asset type on Polyhaven.

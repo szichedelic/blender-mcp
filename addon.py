@@ -300,6 +300,8 @@ class BlenderMCPServer:
             "blender_redo": self.blender_redo,
             "select_objects": self.select_objects,
             "export_scene": self.export_scene,
+            "save_scene": self.save_scene,
+            "set_auto_save": self.set_auto_save,
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
@@ -1817,6 +1819,60 @@ class BlenderMCPServer:
         else:
             raise ValueError(f"Unsupported format: {format}. Must be GLTF, GLB, FBX, OBJ, or STL")
         return {"filepath": filepath, "format": format, "selected_only": selected_only}
+
+    def save_scene(self, filepath=None):
+        if filepath:
+            filepath = os.path.expanduser(filepath)
+            parent_dir = os.path.dirname(filepath)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            if not filepath.endswith(".blend"):
+                filepath += ".blend"
+            bpy.ops.wm.save_as_mainfile(filepath=filepath)
+        else:
+            if bpy.data.filepath:
+                bpy.ops.wm.save_mainfile()
+                filepath = bpy.data.filepath
+            else:
+                return {"error": "No filepath specified and file has never been saved. Provide a filepath."}
+        return {"filepath": filepath, "saved": True}
+
+    def set_auto_save(self, enabled, interval_seconds=300, filepath=None):
+        if enabled:
+            if filepath:
+                filepath = os.path.expanduser(filepath)
+                if not filepath.endswith(".blend"):
+                    filepath += ".blend"
+
+            def auto_save_timer():
+                try:
+                    save_path = filepath or bpy.data.filepath
+                    if save_path:
+                        bpy.ops.wm.save_as_mainfile(filepath=save_path)
+                        logger.info(f"Auto-saved to {save_path}")
+                    else:
+                        logger.warning("Auto-save skipped: no filepath set")
+                except Exception as e:
+                    logger.error(f"Auto-save failed: {e}")
+                return interval_seconds
+
+            if hasattr(self, '_auto_save_timer') and self._auto_save_timer:
+                try:
+                    bpy.app.timers.unregister(self._auto_save_timer)
+                except:
+                    pass
+
+            self._auto_save_timer = auto_save_timer
+            bpy.app.timers.register(auto_save_timer, first_interval=interval_seconds)
+            return {"enabled": True, "interval_seconds": interval_seconds, "filepath": filepath or bpy.data.filepath or "not set"}
+        else:
+            if hasattr(self, '_auto_save_timer') and self._auto_save_timer:
+                try:
+                    bpy.app.timers.unregister(self._auto_save_timer)
+                except:
+                    pass
+                self._auto_save_timer = None
+            return {"enabled": False}
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""
