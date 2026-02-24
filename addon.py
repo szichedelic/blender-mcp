@@ -306,6 +306,7 @@ class BlenderMCPServer:
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
             "get_hunyuan3d_status": self.get_hunyuan3d_status,
+            "get_meshy_status": self.get_meshy_status,
             "auth": lambda **kw: {"authenticated": True},
         }
 
@@ -341,6 +342,14 @@ class BlenderMCPServer:
                 "import_generated_asset_hunyuan": self.import_generated_asset_hunyuan
             }
             handlers.update(hunyuan_handlers)
+
+        if bpy.context.scene.blendermcp_use_meshy:
+            meshy_handlers = {
+                "create_meshy_job": self.create_meshy_job,
+                "poll_meshy_job_status": self.poll_meshy_job_status,
+                "import_meshy_asset": self.import_meshy_asset,
+            }
+            handlers.update(meshy_handlers)
 
         handler = handlers.get(cmd_type)
         if handler:
@@ -3592,6 +3601,178 @@ class BlenderMCPServer:
                 print(f"Failed to clean up temporary directory {temp_dir}: {e}")
     #endregion
 
+    #region Meshy
+    def get_meshy_status(self):
+        """Get the current status of Meshy integration"""
+        enabled = bpy.context.scene.blendermcp_use_meshy
+        if enabled:
+            api_key = bpy.context.scene.blendermcp_meshy_api_key
+            if not api_key:
+                return {
+                    "enabled": False,
+                    "message": """Meshy integration is currently enabled, but the API key is not set. To enable it:
+                        1. In the 3D Viewport, find the BlenderMCP panel in the sidebar (press N if hidden)
+                        2. Keep the 'Use Meshy AI 3D model generation' checkbox checked
+                        3. Enter your Meshy API key
+                        4. Restart the connection to Claude"""
+                }
+            return {
+                "enabled": True,
+                "message": "Meshy integration is enabled and ready to use."
+            }
+        return {
+            "enabled": False,
+            "message": """Meshy integration is currently disabled. To enable it:
+                        1. In the 3D Viewport, find the BlenderMCP panel in the sidebar (press N if hidden)
+                        2. Check the 'Use Meshy AI 3D model generation' checkbox
+                        3. Enter your Meshy API key
+                        4. Restart the connection to Claude"""
+        }
+
+    def create_meshy_job(self, prompt=None, image_url=None, mode="preview",
+                         preview_task_id=None, art_style="realistic",
+                         topology="triangle", target_polycount=30000):
+        """Create a Meshy text-to-3D or image-to-3D generation job"""
+        api_key = bpy.context.scene.blendermcp_meshy_api_key
+        if not api_key:
+            return {"error": "Meshy API key is not configured"}
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            if image_url:
+                url = "https://api.meshy.ai/openapi/v1/image-to-3d"
+                payload = {"image_url": image_url}
+                self._set_operation_status("Creating Meshy image-to-3D job...")
+            elif mode == "refine" and preview_task_id:
+                url = "https://api.meshy.ai/openapi/v2/text-to-3d"
+                payload = {
+                    "mode": "refine",
+                    "preview_task_id": preview_task_id,
+                }
+                self._set_operation_status("Creating Meshy refine job...")
+            else:
+                url = "https://api.meshy.ai/openapi/v2/text-to-3d"
+                payload = {
+                    "mode": "preview",
+                    "prompt": prompt or "",
+                    "ai_model": "meshy-6",
+                    "art_style": art_style,
+                    "topology": topology,
+                    "target_polycount": target_polycount,
+                }
+                self._set_operation_status("Creating Meshy text-to-3D job...")
+
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+            if response.status_code not in (200, 201, 202):
+                return {"error": f"Meshy API returned status {response.status_code}: {response.text}"}
+
+            data = response.json()
+            task_id = data.get("result") or data.get("task_id") or data.get("id")
+            if not task_id:
+                return {"error": f"No task ID in response: {data}"}
+
+            task_type = "image-to-3d" if image_url else "text-to-3d"
+            return {"task_id": task_id, "mode": mode, "task_type": task_type}
+
+        except requests.exceptions.Timeout:
+            return {"error": "Request timed out connecting to Meshy API"}
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            self._set_operation_status("")
+
+    def poll_meshy_job_status(self, task_id, task_type="text-to-3d"):
+        """Poll the status of a Meshy generation job"""
+        api_key = bpy.context.scene.blendermcp_meshy_api_key
+        if not api_key:
+            return {"error": "Meshy API key is not configured"}
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        try:
+            if task_type == "image-to-3d":
+                url = f"https://api.meshy.ai/openapi/v1/image-to-3d/{task_id}"
+            else:
+                url = f"https://api.meshy.ai/openapi/v2/text-to-3d/{task_id}"
+
+            response = requests.get(url, headers=headers, timeout=30)
+
+            if response.status_code != 200:
+                return {"error": f"Meshy API returned status {response.status_code}: {response.text}"}
+
+            return response.json()
+
+        except requests.exceptions.Timeout:
+            return {"error": "Request timed out connecting to Meshy API"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def import_meshy_asset(self, task_id, task_type="text-to-3d", name=None):
+        """Import a completed Meshy asset into Blender"""
+        self._set_operation_status(f"Importing Meshy asset: {task_id}...")
+        try:
+            status_result = self.poll_meshy_job_status(task_id, task_type)
+            if "error" in status_result:
+                return status_result
+
+            status = status_result.get("status", "")
+            if status != "SUCCEEDED":
+                return {"error": f"Task is not complete yet. Current status: {status}"}
+
+            model_urls = status_result.get("model_urls", {})
+            glb_url = model_urls.get("glb")
+            if not glb_url:
+                return {"error": "No GLB model URL available in task result"}
+
+            response = requests.get(glb_url, timeout=120)
+            if response.status_code != 200:
+                return {"error": f"Failed to download GLB model: status {response.status_code}"}
+
+            temp_file = tempfile.NamedTemporaryFile(
+                delete=False,
+                prefix=f"meshy_{task_id}_",
+                suffix=".glb",
+            )
+            temp_file.write(response.content)
+            temp_file.close()
+
+            mesh_obj = BlenderMCPServer._clean_imported_glb(temp_file.name, mesh_name=name)
+
+            try:
+                os.unlink(temp_file.name)
+            except Exception:
+                pass
+
+            if mesh_obj is None:
+                return {"error": "Failed to import GLB model"}
+
+            result = {
+                "name": mesh_obj.name,
+                "type": mesh_obj.type,
+                "location": [mesh_obj.location.x, mesh_obj.location.y, mesh_obj.location.z],
+                "rotation": [mesh_obj.rotation_euler.x, mesh_obj.rotation_euler.y, mesh_obj.rotation_euler.z],
+                "scale": [mesh_obj.scale.x, mesh_obj.scale.y, mesh_obj.scale.z],
+            }
+
+            if mesh_obj.type == "MESH":
+                bounding_box = self._get_aabb(mesh_obj)
+                result["world_bounding_box"] = bounding_box
+
+            return result
+
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            self._set_operation_status("")
+    #endregion
+
 class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
@@ -3660,7 +3841,11 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
                 layout.prop(scene, "blendermcp_hunyuan3d_num_inference_steps", text="Number of Inference Steps")
                 layout.prop(scene, "blendermcp_hunyuan3d_guidance_scale", text="Guidance Scale")
                 layout.prop(scene, "blendermcp_hunyuan3d_texture", text="Generate Texture")
-        
+
+        layout.prop(scene, "blendermcp_use_meshy", text="Use Meshy AI 3D model generation")
+        if scene.blendermcp_use_meshy:
+            layout.prop(scene, "blendermcp_meshy_api_key", text="API Key")
+
         if not scene.blendermcp_server_running:
             layout.prop(scene, "blendermcp_auth_token", text="Auth Token")
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
@@ -3833,6 +4018,19 @@ def register():
         default=""
     )
 
+    bpy.types.Scene.blendermcp_use_meshy = bpy.props.BoolProperty(
+        name="Use Meshy",
+        description="Enable Meshy AI 3D model generation integration",
+        default=False
+    )
+
+    bpy.types.Scene.blendermcp_meshy_api_key = bpy.props.StringProperty(
+        name="Meshy API Key",
+        subtype="PASSWORD",
+        description="API Key provided by Meshy",
+        default=""
+    )
+
     bpy.types.Scene.blendermcp_current_operation = bpy.props.StringProperty(
         name="Current Operation",
         default=""
@@ -3878,6 +4076,8 @@ def unregister():
     del bpy.types.Scene.blendermcp_hyper3d_api_key
     del bpy.types.Scene.blendermcp_use_sketchfab
     del bpy.types.Scene.blendermcp_sketchfab_api_key
+    del bpy.types.Scene.blendermcp_use_meshy
+    del bpy.types.Scene.blendermcp_meshy_api_key
     del bpy.types.Scene.blendermcp_use_hunyuan3d
     del bpy.types.Scene.blendermcp_hunyuan3d_mode
     del bpy.types.Scene.blendermcp_hunyuan3d_secret_id

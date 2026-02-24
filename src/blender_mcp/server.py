@@ -2235,6 +2235,139 @@ def import_generated_asset_hunyuan(
         logger.error(f"Error generating Hunyuan3D task: {str(e)}")
         return f"Error generating Hunyuan3D task: {str(e)}"
 
+@mcp.tool()
+def get_meshy_status(ctx: Context) -> str:
+    """
+    Check if Meshy AI integration is enabled in Blender.
+    Returns a message indicating whether Meshy features are available.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_meshy_status")
+        message = result.get("message", "")
+        return message
+    except Exception as e:
+        logger.error(f"Error checking Meshy status: {str(e)}")
+        return f"Error checking Meshy status: {str(e)}"
+
+@mcp.tool()
+def generate_meshy_model_via_text(
+    ctx: Context,
+    text_prompt: str,
+    art_style: str = "realistic",
+    topology: str = "triangle",
+    target_polycount: int = 30000,
+) -> str:
+    """
+    Generate a 3D model using Meshy AI from a text description.
+    This creates a preview-quality model. Use poll_meshy_job_status to check progress,
+    then import_meshy_asset to bring it into Blender.
+
+    Parameters:
+    - text_prompt: A short description of the desired 3D model in English.
+    - art_style: Art style for generation (e.g. "realistic", "cartoon", "low-poly"). Default: "realistic".
+    - topology: Mesh topology type ("triangle" or "quad"). Default: "triangle".
+    - target_polycount: Target polygon count for the model. Default: 30000.
+
+    Returns a JSON with task_id to use for polling and importing.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("create_meshy_job", {
+            "prompt": text_prompt,
+            "mode": "preview",
+            "art_style": art_style,
+            "topology": topology,
+            "target_polycount": target_polycount,
+        })
+        if "error" in result:
+            return json.dumps(result)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error creating Meshy text-to-3D job: {str(e)}")
+        return f"Error creating Meshy text-to-3D job: {str(e)}"
+
+@mcp.tool()
+def generate_meshy_model_via_image(
+    ctx: Context,
+    image_url: str,
+) -> str:
+    """
+    Generate a 3D model using Meshy AI from an image reference.
+    Use poll_meshy_job_status to check progress, then import_meshy_asset to bring it into Blender.
+
+    Parameters:
+    - image_url: URL of the input image to generate a 3D model from.
+
+    Returns a JSON with task_id to use for polling and importing.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("create_meshy_job", {
+            "image_url": image_url,
+        })
+        if "error" in result:
+            return json.dumps(result)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error creating Meshy image-to-3D job: {str(e)}")
+        return f"Error creating Meshy image-to-3D job: {str(e)}"
+
+@mcp.tool()
+def poll_meshy_job_status(
+    ctx: Context,
+    task_id: str,
+    task_type: str = "text-to-3d",
+) -> str:
+    """
+    Check if a Meshy generation task is completed.
+
+    Parameters:
+    - task_id: The task_id returned by the generate step.
+    - task_type: The type of task ("text-to-3d" or "image-to-3d"). Default: "text-to-3d".
+
+    Returns the task status. Possible statuses: PENDING, IN_PROGRESS, SUCCEEDED, FAILED, CANCELED.
+    This is a polling API, so only proceed when the status is finally determined ("SUCCEEDED" or a terminal state).
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("poll_meshy_job_status", {
+            "task_id": task_id,
+            "task_type": task_type,
+        })
+        return json.dumps(result) if isinstance(result, dict) else result
+    except Exception as e:
+        logger.error(f"Error polling Meshy job status: {str(e)}")
+        return f"Error polling Meshy job status: {str(e)}"
+
+@mcp.tool()
+def import_meshy_asset(
+    ctx: Context,
+    task_id: str,
+    name: str,
+    task_type: str = "text-to-3d",
+) -> str:
+    """
+    Import a completed Meshy asset into Blender after the generation task has succeeded.
+
+    Parameters:
+    - task_id: The task_id of the completed generation task.
+    - name: The name for the imported object in the scene.
+    - task_type: The type of task ("text-to-3d" or "image-to-3d"). Default: "text-to-3d".
+
+    Returns the imported object info including name, location, dimensions, and bounding box.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("import_meshy_asset", {
+            "task_id": task_id,
+            "task_type": task_type,
+            "name": name,
+        })
+        return json.dumps(result) if isinstance(result, dict) else result
+    except Exception as e:
+        logger.error(f"Error importing Meshy asset: {str(e)}")
+        return f"Error importing Meshy asset: {str(e)}"
 
 @mcp.prompt()
 def asset_creation_strategy() -> str:
@@ -2306,6 +2439,26 @@ def asset_creation_strategy() -> str:
                             - Use generate_hunyuan3d_model if image (local or urls)  or text prompt is given and import the asset
 
                 You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.
+        5. Meshy
+            Meshy AI is good at generating 3D models from text or images.
+            So don't try to:
+            1. Generate the whole scene with one shot
+            2. Generate ground using Meshy
+            3. Generate parts of the items separately and put them together afterwards
+
+            Use get_meshy_status() to verify its status
+            If Meshy is enabled:
+            - For objects/models, do the following steps:
+                1. Create the model generation task
+                    - Use generate_meshy_model_via_text() for text-to-3D
+                    - Use generate_meshy_model_via_image() for image-to-3D
+                2. Poll the status
+                    - Use poll_meshy_job_status() to check if the generation task has completed (SUCCEEDED) or failed
+                3. Import the asset
+                    - Use import_meshy_asset() to import the generated GLB model
+                4. After importing the asset, ALWAYS check the world_bounding_box of the imported mesh, and adjust the mesh's location and size
+
+                You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.
 
     3. Always check the world_bounding_box for each item so that:
         - Ensure that all objects that should not be clipping are not clipping.
@@ -2314,15 +2467,15 @@ def asset_creation_strategy() -> str:
     4. Recommended asset source priority:
         - For specific existing objects: First try Sketchfab, then PolyHaven
         - For generic objects/furniture: First try PolyHaven, then Sketchfab
-        - For custom or unique items not available in libraries: Use Hyper3D Rodin or Hunyuan3D
+        - For custom or unique items not available in libraries: Use Hyper3D Rodin, Hunyuan3D, or Meshy
         - For environment lighting: Use PolyHaven HDRIs
         - For materials/textures: Use PolyHaven textures
 
     Only fall back to scripting when:
-    - PolyHaven, Sketchfab, Hyper3D, and Hunyuan3D are all disabled
+    - PolyHaven, Sketchfab, Hyper3D, Hunyuan3D, and Meshy are all disabled
     - A simple primitive is explicitly requested
     - No suitable asset exists in any of the libraries
-    - Hyper3D Rodin or Hunyuan3D failed to generate the desired asset
+    - Hyper3D Rodin, Hunyuan3D, or Meshy failed to generate the desired asset
     - The task specifically requires a basic material/color
     """
 
