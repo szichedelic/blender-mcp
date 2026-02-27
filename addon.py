@@ -3773,6 +3773,56 @@ class BlenderMCPServer:
             self._set_operation_status("")
     #endregion
 
+
+def _sync_prefs_to_scene(scene=None):
+    """Copy API keys and integration toggles from addon preferences to scene properties."""
+    try:
+        prefs = bpy.context.preferences.addons[__name__].preferences
+    except (KeyError, AttributeError):
+        return
+
+    if scene is None:
+        scene = bpy.context.scene
+    if scene is None:
+        return
+
+    # Sync API keys: only overwrite scene value if addon pref is set and scene value is empty
+    key_map = {
+        "sketchfab_api_key": "blendermcp_sketchfab_api_key",
+        "meshy_api_key": "blendermcp_meshy_api_key",
+        "hyper3d_api_key": "blendermcp_hyper3d_api_key",
+        "hunyuan3d_secret_id": "blendermcp_hunyuan3d_secret_id",
+        "hunyuan3d_secret_key": "blendermcp_hunyuan3d_secret_key",
+        "auth_token": "blendermcp_auth_token",
+    }
+    for pref_attr, scene_attr in key_map.items():
+        pref_val = getattr(prefs, pref_attr, "")
+        scene_val = getattr(scene, scene_attr, "")
+        if pref_val and not scene_val:
+            setattr(scene, scene_attr, pref_val)
+
+    # Sync integration toggles: addon pref overrides scene default on new scenes
+    toggle_map = {
+        "use_polyhaven": "blendermcp_use_polyhaven",
+        "use_sketchfab": "blendermcp_use_sketchfab",
+        "use_meshy": "blendermcp_use_meshy",
+        "use_hyper3d": "blendermcp_use_hyper3d",
+        "use_hunyuan3d": "blendermcp_use_hunyuan3d",
+    }
+    for pref_attr, scene_attr in toggle_map.items():
+        pref_val = getattr(prefs, pref_attr, False)
+        if pref_val:
+            setattr(scene, scene_attr, pref_val)
+
+    logger.info("Synced addon preferences to scene properties")
+
+
+@bpy.app.handlers.persistent
+def _on_load_post(dummy):
+    """Handler called after a .blend file is loaded — syncs saved API keys to the new scene."""
+    _sync_prefs_to_scene()
+
+
 class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
@@ -3781,6 +3831,79 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         description="Write logs to blendermcp.log in Blender config directory",
         default=False,
         update=lambda self, ctx: self._toggle_file_logging()
+    )
+
+    # --- Persisted API Keys (survive across sessions and new files) ---
+    sketchfab_api_key: bpy.props.StringProperty(
+        name="Sketchfab API Key",
+        subtype="PASSWORD",
+        description="API Key provided by Sketchfab (persisted across sessions)",
+        default=""
+    )
+
+    meshy_api_key: bpy.props.StringProperty(
+        name="Meshy API Key",
+        subtype="PASSWORD",
+        description="API Key provided by Meshy (persisted across sessions)",
+        default=""
+    )
+
+    hyper3d_api_key: bpy.props.StringProperty(
+        name="Hyper3D API Key",
+        subtype="PASSWORD",
+        description="API Key provided by Hyper3D (persisted across sessions)",
+        default=""
+    )
+
+    hunyuan3d_secret_id: bpy.props.StringProperty(
+        name="Hunyuan 3D SecretId",
+        description="SecretId provided by Hunyuan 3D (persisted across sessions)",
+        default=""
+    )
+
+    hunyuan3d_secret_key: bpy.props.StringProperty(
+        name="Hunyuan 3D SecretKey",
+        subtype="PASSWORD",
+        description="SecretKey provided by Hunyuan 3D (persisted across sessions)",
+        default=""
+    )
+
+    auth_token: bpy.props.StringProperty(
+        name="Auth Token",
+        subtype="PASSWORD",
+        description="Optional authentication token for socket connections (persisted across sessions)",
+        default=""
+    )
+
+    # --- Persisted integration toggles ---
+    use_polyhaven: bpy.props.BoolProperty(
+        name="Use Poly Haven",
+        description="Enable Poly Haven asset integration",
+        default=False
+    )
+
+    use_sketchfab: bpy.props.BoolProperty(
+        name="Use Sketchfab",
+        description="Enable Sketchfab asset integration",
+        default=False
+    )
+
+    use_meshy: bpy.props.BoolProperty(
+        name="Use Meshy",
+        description="Enable Meshy AI 3D model generation integration",
+        default=False
+    )
+
+    use_hyper3d: bpy.props.BoolProperty(
+        name="Use Hyper3D Rodin",
+        description="Enable Hyper3D Rodin generation integration",
+        default=False
+    )
+
+    use_hunyuan3d: bpy.props.BoolProperty(
+        name="Use Hunyuan 3D",
+        description="Enable Hunyuan asset integration",
+        default=False
     )
 
     def _toggle_file_logging(self):
@@ -3804,6 +3927,25 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         layout.label(text="Logging:", icon='TEXT')
         box = layout.box()
         box.prop(self, "log_to_file", text="Log to File")
+
+        layout.separator()
+        layout.label(text="API Keys (persisted across sessions):", icon='LOCKED')
+        box = layout.box()
+        box.prop(self, "sketchfab_api_key", text="Sketchfab API Key")
+        box.prop(self, "meshy_api_key", text="Meshy API Key")
+        box.prop(self, "hyper3d_api_key", text="Hyper3D API Key")
+        box.prop(self, "hunyuan3d_secret_id", text="Hunyuan3D SecretId")
+        box.prop(self, "hunyuan3d_secret_key", text="Hunyuan3D SecretKey")
+        box.prop(self, "auth_token", text="Auth Token")
+
+        layout.separator()
+        layout.label(text="Default Integrations:", icon='PREFERENCES')
+        box = layout.box()
+        box.prop(self, "use_polyhaven", text="Poly Haven")
+        box.prop(self, "use_sketchfab", text="Sketchfab")
+        box.prop(self, "use_meshy", text="Meshy")
+        box.prop(self, "use_hyper3d", text="Hyper3D Rodin")
+        box.prop(self, "use_hunyuan3d", text="Hunyuan 3D")
 
 class BLENDERMCP_PT_Panel(bpy.types.Panel):
     bl_label = "Blender MCP"
@@ -4050,12 +4192,23 @@ def register():
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
 
+    # Register load handler to auto-sync API keys from addon prefs to scene
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
+
+    # Sync now for the current session
+    bpy.app.timers.register(lambda: (_sync_prefs_to_scene(), None)[-1], first_interval=0.5)
+
     logger.info("BlenderMCP addon registered")
 
 def unregister():
     if hasattr(bpy.types, "blendermcp_server") and bpy.types.blendermcp_server:
         bpy.types.blendermcp_server.stop()
         del bpy.types.blendermcp_server
+
+    # Remove load handler
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
 
     for h in logger.handlers[:]:
         if getattr(h, 'name', '') == 'blendermcp_file':
